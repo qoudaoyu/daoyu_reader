@@ -190,7 +190,7 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             Section("Grok（xAI，角色分析备用）") {
                 SecretField("API Key（console.x.ai 获取）", app.keys.grokKey) { app.keys.grokKey = it }
-                SwitchRow("千问审核拦下的段落改用 Grok 分析", tts.grokRescue) { v -> upd { it.copy(grokRescue = v) } }
+                SwitchRow("千问分析失败或被审核拦下时改用 Grok", tts.grokRescue) { v -> upd { it.copy(grokRescue = v) } }
                 Hint("阿里云会对送去分析的文字做内容审核，普通网文偶尔被误拦。Grok 不受这个审核，实测说话人判断同样全部正确、速度更快，但需要开代理，约 24 元 / 百万字（只用于被拦段落时几乎不花钱）。没开代理时自动拆小段重试，最后按\"某某道\"规则判断。")
             }
 

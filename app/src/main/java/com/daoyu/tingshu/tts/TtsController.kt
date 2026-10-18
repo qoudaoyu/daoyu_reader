@@ -233,6 +233,7 @@ class TtsController(private val context: Context) {
                 _state.update { it.copy(status = "") }
                 if (roles == null) notifyOnce("drama$ch", "本章角色分析失败（${director.lastError ?: "网络错误"}），本章用旁白朗读")
             }
+            director.grokFallbackReason?.let { notifyOnce("grokFallback", "千问角色分析出错（$it），已改用 Grok 分析") }
             if (director.castBroken(b.id)) notifyOnce("castBroken", "本书角色表文件损坏，已另存为 cast.json.broken，角色会重新分配音色，可在角色表里调整")
             // characters met before 豆包 was switched on still need a voice
             if (director.usesDoubao()) runCatching { director.ensureDoubaoVoices(b.id) }

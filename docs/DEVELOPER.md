@@ -191,6 +191,7 @@ start(book, ch, offset)
   1. 如果填了 Grok Key 且开着"改用 Grok"开关，整段交给 Grok（`grok-4.20-0309-non-reasoning`，api.x.ai，需要代理）。
   2. Grok 不可用时，对半拆开重试（不带前文），一直拆到 ≤1 句或 <150 字。
   3. 仍被拦的句子用 `ruleBased` 规则判断：在引号前后 30 字内找已知角色名 + 说话动词。
+- **千问本身出错时**（模型下线、额度用完、连续超时、返回内容坏掉，重试一次仍失败）：同样由 Grok 接手这一段（受同一个开关控制，需代理），并提示一次原因；Grok 也不行时这一章照旧退回旁白朗读。测试用 `SIM_QWEN_DOWN=1` 模拟。
 - **Grok 当主模型时**：如果连不上（`GrokUnreachable`，多半是没开代理），10 分钟内改用千问 Max，并提示一次。
 - **测试钩子**：`onAnalysed`、`onReply`（导出原始提示词和回复）、`simulateBlock`（模拟审核拦截）、`simulateGrokDown`。
 
@@ -240,6 +241,7 @@ FREE_VOICES=1                                对白也用 Edge（不花豆包和
 DIRECTOR_MODEL=qwen3.8-max|qwen-plus|qwen-flash|grok-…   临时指定分析模型
 SIMULATE_BLOCK_B64=<base64(触发文本)>         模拟阿里云审核拦截（用 base64 是因为环境变量里的中文会被弄乱）
 SIM_GROK_DOWN=1                              模拟 Grok 连不上
+SIM_QWEN_DOWN=1                              模拟千问分析全部失败（检验 Grok 接手）
 DUMP_REPLY=/path                             导出每段的提示词和模型回复
 ```
 

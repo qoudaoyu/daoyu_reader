@@ -39,6 +39,7 @@ class DramaLiveTest {
         app.tts.freeVoicesForTest = System.getenv("FREE_VOICES") != null
         app.keys.grokKey = System.getenv("GROK_KEY").orEmpty()
         app.director.simulateGrokDown = System.getenv("SIM_GROK_DOWN") != null
+        app.director.simulateQwenDown = System.getenv("SIM_QWEN_DOWN") != null
         app.director.simulateBlock = System.getenv("SIMULATE_BLOCK_B64")?.let { String(java.util.Base64.getDecoder().decode(it), Charsets.UTF_8) }
         System.getenv("DUMP_REPLY")?.let { path -> var n = 0; app.director.onReply = { p, r -> File(path).apply { mkdirs() }.resolve("part${n++}.txt").writeText(p + "\n=====\n" + r) } }
         System.getenv("DRAMA_ENGINE")?.let { e -> runBlocking { app.settings.updateTts { it.copy(dramaVoiceEngine = e) } } }
@@ -70,7 +71,7 @@ class DramaLiveTest {
         (0 until book.chapterCount).forEach { ch ->
             app.director.cached(book.id, ch)?.lines?.forEach { l -> println("ROLE ch$ch ${l.speaker}\t${book.let { app.storage.readChapter(it.id, ch).substring(l.start, l.end) }}") }
         }
-        println("BLOCKED parts=${app.director.blockedParts.get()} grokRescued=${app.director.grokRescued.get()} sim=${app.director.simulateBlock}")
+        println("BLOCKED parts=${app.director.blockedParts.get()} grokRescued=${app.director.grokRescued.get()} grokFallback=${app.director.grokFallback.get()} sim=${app.director.simulateBlock}")
         val usage = runBlocking { app.db.usage().observeAllOnce() }
         usage.forEach { println("USAGE ${it.engine} chars=${it.chars} billed=${it.billedChars} tokens=${it.audioTokens} req=${it.requests}") }
 

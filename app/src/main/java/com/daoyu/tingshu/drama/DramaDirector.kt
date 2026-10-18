@@ -4,6 +4,7 @@ import com.daoyu.tingshu.App
 import com.daoyu.tingshu.data.TtsUsage
 import com.daoyu.tingshu.tts.Http
 import com.daoyu.tingshu.tts.TtsException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -451,7 +452,19 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
         try {
             return try { analysePart(bookId, ch, body, part, quotes, withContext) }
             catch (e: ContentBlocked) { throw e }
-            catch (e: Exception) { analysePart(bookId, ch, body, part, quotes, withContext) }   // one retry for other errors
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                try { analysePart(bookId, ch, body, part, quotes, withContext) }   // one retry for other errors
+                catch (e2: ContentBlocked) { throw e2 }
+                catch (e2: CancellationException) { throw e2 }
+                catch (e2: Exception) {
+                    // 千问 itself is failing (model retired, quota, outage): Grok takes the part if it can be reached
+                    if (grokMain() || !app.settings.tts.value.grokRescue || !grokUsable()) throw e2
+                    try { analysePart(bookId, ch, body, part, quotes, withContext, forceGrok = true).also { grokFallback.incrementAndGet(); grokFallbackReason = e2.message } }
+                    catch (e3: CancellationException) { throw e3 }
+                    catch (_: Exception) { throw e2 }
+                }
+            }
         } catch (e: ContentBlocked) {
             blockedParts.incrementAndGet()
             // Grok does not apply the Aliyun filter: hand it the whole part if it can be reached
@@ -481,6 +494,12 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
     /** Parts the content filter refused / that Grok then analysed (for tests / diagnostics). */
     val blockedParts = java.util.concurrent.atomic.AtomicInteger(0)
     val grokRescued = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Parts Grok analysed because 千问 kept failing for reasons other than the content filter. */
+    val grokFallback = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Why 千问 failed the last time Grok stepped in; shown to the listener once. */
+    @Volatile var grokFallbackReason: String? = null
 
     private val speechVerbs = Regex("(道|说|问|喊|叫|笑|叹|喝|吼|骂|答|应|嚷|嘀咕|开口|低语|冷哼|怒斥)")
 
@@ -628,6 +647,9 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
     /** Test hook: pretend Grok cannot be reached. */
     internal var simulateGrokDown = false
 
+    /** Test hook: pretend every 千问 analysis call fails (as when the model is retired). */
+    internal var simulateQwenDown = false
+
     @Volatile private var grokDownUntil = 0L
 
     private fun grokUsable() = app.keys.grokKey.isNotBlank() && System.currentTimeMillis() > grokDownUntil && !simulateGrokDown
@@ -656,6 +678,7 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
 
     private suspend fun callModel(prompt: String, grok: Boolean): String = withContext(Dispatchers.IO) {
         if (grok && simulateGrokDown) throw GrokUnreachable("simulated")
+        if (!grok && simulateQwenDown) throw TtsException("角色分析失败：Model not exist.（模拟）")
         if (!grok) simulateBlock?.let { if (prompt.contains(it)) throw ContentBlocked("Input data may contain inappropriate content.") }
         val key = if (grok) app.keys.grokKey else app.keys.cosyKey
         if (key.isBlank()) throw TtsException(if (grok) "未填写 Grok API Key" else "多角色需要阿里云 API Key（与 CosyVoice 共用）")
