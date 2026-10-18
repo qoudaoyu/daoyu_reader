@@ -32,6 +32,7 @@ class DramaLiveTest {
         val key = System.getenv("COSY_KEY").orEmpty(); assumeTrue(key.isNotEmpty())
         val out = File(System.getenv("TTS_OUT") ?: "build/drama").apply { mkdirs() }
         val app = App.instance
+        app.tts.skipPlaybackForTest = true
         app.keys.cosyKey = key
         app.keys.volcKey = System.getenv("VOLC_KEY").orEmpty()
         System.getenv("DIRECTOR_MODEL")?.let { m -> runBlocking { app.settings.updateTts { it.copy(directorModel = m, directorChecked = true) } } }

@@ -570,8 +570,11 @@ class TtsController(private val context: Context) {
 
     // ---------------------------------------------------------------- playback
 
+    /** Robolectric's MediaPlayer cannot play real audio; tests that drive the pipeline treat every file as played. */
+    internal var skipPlaybackForTest = false
+
     /** Plays [file] to the end. Returns false when it could not be played; the broken file is deleted. */
-    private suspend fun playFile(file: File): Boolean = suspendCancellableCoroutine<Boolean> { cont ->
+    private suspend fun playFile(file: File): Boolean = if (skipPlaybackForTest) true else suspendCancellableCoroutine<Boolean> { cont ->
         val p = MediaPlayer()
         try {
             p.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())

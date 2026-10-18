@@ -21,6 +21,7 @@ class DramaSwitchTest {
     @Test fun switchWhileListening() {
         val key = System.getenv("COSY_KEY").orEmpty(); assumeTrue(key.isNotEmpty())
         val app = App.instance
+        app.tts.skipPlaybackForTest = true
         app.keys.cosyKey = key
         val book = runBlocking { (app.importer.import("切换测试.txt", javaClass.getResourceAsStream("/drama_book.txt")!!) as BookImporter.Result.Ok).book }
         val played = ArrayList<String>()
