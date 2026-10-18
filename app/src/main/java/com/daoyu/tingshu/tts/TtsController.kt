@@ -12,6 +12,8 @@ import com.daoyu.tingshu.data.Book
 import com.daoyu.tingshu.data.Chapter
 import com.daoyu.tingshu.data.TtsSettings
 import com.daoyu.tingshu.data.TtsUsage
+import com.daoyu.tingshu.drama.DoubaoVoices
+import com.daoyu.tingshu.drama.Roles
 import com.daoyu.tingshu.drama.VoicePools
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -446,6 +448,13 @@ class TtsController(private val context: Context) {
         val b = book!!
         val narrator = director.cast(b.id).value.narratorVoice ?: s.dramaNarratorVoice
         val m = seg.role?.let { director.resolve(b.id, it) }
+        if (m == null && Roles.isPasserby(seg.role)) {
+            // unnamed speakers get an ordinary voice of their gender, not the narrator's storytelling one
+            val female = seg.role == Roles.PASSERBY_F
+            val edge = if (female) "zh-CN-XiaoyiNeural" else "zh-CN-YunjianNeural"
+            val db = if (director.usesDoubao() && !freeVoicesForTest) (if (female) DoubaoVoices.PASSERBY_F else DoubaoVoices.PASSERBY_M) else null
+            return DramaVoice(seg.role, db, doubaoInstruction(seg.emotion), null, "", edge)
+        }
         if (m == null) {
             val db = if (director.narratesWithDoubao() && !freeVoicesForTest) director.narratorDoubao(b.id) else null
             return DramaVoice(null, db, if (db != null) NARRATION else "", null, "", narrator)

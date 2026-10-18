@@ -552,11 +552,12 @@ $registry
 - 留意回话里的称呼：下一句怎么称呼对方（如"小丫头""老夫""哥"），能反推出上一句是谁说的；性别、辈分要对得上。
 - 引号里如果不是有人说出口的话，speaker 填"旁白"：强调词或外号（所谓的"天才"）、牌匾招牌、书名、俗语名言、转述或回忆里提到的字句（他想起"活下去"三个字）。
 - 角色的心里话（心道、暗想）算该角色的对白。
-- 无名人物（下人、围观者、众人）填"路人"。
+- 没有名字但身份明确、说话不止一两句的配角（卖花的女孩、店小二、老妇人），用身份当名字（如"卖花女孩"），作为角色列进 characters 并标出性别、年龄。
+- 其余无名人物（围观者、众人、一闪而过的下人）：男性或不确定填"路人"，女性填"路人女"。
 
 输出 JSON：
 1. characters：本段所有说过话的有名角色（含角色表里已有的，必须沿用标准名）。gender 男/女；age 儿童/少年/青年/中年/老年；aliases 为本段里对他的其他称呼；voice 用一句话描述适合他的嗓音和说话气质（年龄、嗓音、性格），如"四十多岁，嗓音低沉浑厚，说话沉稳威严"。
-2. lines：每个编号一项，写成数组 [编号, "引号内前4个字", "说话人", "语气"]。说话人必须是标准名、"路人"或"旁白"；语气是给配音的指令，8~20 字，只写声音上听得出来的：情绪和强度、音量、语速、气息（如"压着怒火咬牙低吼""带哭腔急切委屈""慢悠悠阴阳怪气地冷笑"），结合上下文把情绪写足。
+2. lines：每个编号一项，写成数组 [编号, "引号内前4个字", "说话人", "语气"]。说话人必须是标准名、"路人"、"路人女"或"旁白"；语气是给配音的指令，8~20 字，只写声音上听得出来的：情绪和强度、音量、语速、气息（如"压着怒火咬牙低吼""带哭腔急切委屈""慢悠悠阴阳怪气地冷笑"），结合上下文把情绪写足。
 只输出 JSON：{"characters":[{"name":"","aliases":[],"gender":"","age":"","voice":""}],"lines":[[0,"","",""]]}
 
 ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\n【正文】\n" else ""}$sb"""
@@ -571,7 +572,7 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
             (root["characters"] ?: root["new_characters"])?.jsonArray?.forEach { e ->
                 val o = e.jsonObject
                 val name = o["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-                if (name.isEmpty() || name == Roles.NARRATOR || name == Roles.PASSERBY) return@forEach
+                if (name.isEmpty() || name == Roles.NARRATOR || Roles.isPasserby(name)) return@forEach
                 val aliases = o["aliases"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull?.trim() }?.filter { it.isNotEmpty() && it != name }.orEmpty()
                 val existing = members.indexOfFirst { it.name == name || name in it.aliases }
                 val desc = o["voice"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().take(60)
@@ -621,6 +622,7 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
                     ?: members.filter { sp in it.aliases }.singleOrNull()
                 sp = when {
                     sp == Roles.NARRATOR -> Roles.NARRATOR
+                    sp == Roles.PASSERBY_F -> Roles.PASSERBY_F
                     known != null -> known.name
                     else -> Roles.PASSERBY
                 }

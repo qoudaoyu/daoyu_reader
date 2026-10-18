@@ -552,7 +552,7 @@ private fun SpeakerDialog(theme: ReaderTheme, current: String, names: List<Strin
             Column(Modifier.width(280.dp).padding(vertical = 12.dp)) {
                 Text("这句话是谁说的？", color = theme.secondary, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
                 LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    items((names + listOf(com.daoyu.tingshu.drama.Roles.PASSERBY, com.daoyu.tingshu.drama.Roles.NARRATOR)).distinct()) { n ->
+                    items((names + listOf(com.daoyu.tingshu.drama.Roles.PASSERBY, com.daoyu.tingshu.drama.Roles.PASSERBY_F, com.daoyu.tingshu.drama.Roles.NARRATOR)).distinct()) { n ->
                         Text(
                             if (n == com.daoyu.tingshu.drama.Roles.NARRATOR) "旁白（不是对白）" else n,
                             color = if (n == current) Palette.Gold else theme.text, fontSize = 15.sp,

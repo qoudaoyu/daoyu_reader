@@ -235,6 +235,10 @@ object DoubaoVoices {
 
     fun byId(id: String) = all.firstOrNull { it.id == id }
 
+    /** Unnamed speakers (路人 / 路人女): ordinary voices kept apart from the narrator list. */
+    const val PASSERBY_M = "zh_male_yangguangqingnian_uranus_bigtts"
+    const val PASSERBY_F = "zh_female_kailangjiejie_uranus_bigtts"
+
     /** Calm, even voices offered for narration (not yet blind-tested as narrators). */
     val narrators: List<com.daoyu.tingshu.tts.Voice> = listOf(
         b("male_m191"), r("male_wenrunxuezhe"), b("male_cixingjieshuonan"), b("male_shenyeboke"),
