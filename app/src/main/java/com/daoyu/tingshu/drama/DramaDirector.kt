@@ -659,7 +659,7 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
         if (!grok) simulateBlock?.let { if (prompt.contains(it)) throw ContentBlocked("Input data may contain inappropriate content.") }
         val key = if (grok) app.keys.grokKey else app.keys.cosyKey
         if (key.isBlank()) throw TtsException(if (grok) "未填写 Grok API Key" else "多角色需要阿里云 API Key（与 CosyVoice 共用）")
-        val qwenModel = app.settings.tts.value.directorModel.let { if (it == GROK_MODEL) "qwen3-max" else it }
+        val qwenModel = app.settings.tts.value.directorModel.let { if (it == GROK_MODEL) "qwen3.8-max" else it }
         val body = buildJsonObject {
             put("model", if (grok) GROK_MODEL else qwenModel)
             putJsonArray("messages") { addJsonObject { put("role", "user"); put("content", prompt) } }

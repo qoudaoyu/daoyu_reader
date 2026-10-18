@@ -68,10 +68,11 @@ data class TtsSettings(
     // 1.3.6: Edge rejects the app (403), so narration moved to 豆包 when its key is set; "edge" keeps the free voice
     val dramaNarratorEngine: String = "doubao",        // doubao / edge
     val dramaNarratorDoubao: String = "zh_male_m191_uranus_bigtts",
-    val directorModel: String = "qwen3-max",
-    val directorInPrice: Float = 2.5f,                 // 元 / 百万 tokens
-    val directorOutPrice: Float = 10f,
+    val directorModel: String = "qwen3.8-max",         // 1.3.6: qwen3-max was retired by Aliyun ("Model not exist.")
+    val directorInPrice: Float = 12f,                  // 元 / 百万 tokens (qwen3.8-max, from third-party listings)
+    val directorOutPrice: Float = 36f,
     val directorChecked: Boolean = false,
+    val director38Checked: Boolean = false,            // 1.3.6: qwen3-max moved to qwen3.8-max once
     val grokRescue: Boolean = true,                    // parts refused by the Aliyun content filter go to Grok (if its key is set and reachable)              // 1.3.3: default moved from qwen-plus to qwen3-max (as accurate, 2.5× faster)
     val dramaDesignVoices: Boolean = true,             // main characters get a custom designed voice (0.2 元 each)
     val dramaVoiceEngine: String = "doubao",           // dialogue voices: doubao (豆包 2.0) / qwen; doubao needs its key

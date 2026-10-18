@@ -185,7 +185,7 @@ start(book, ch, offset)
 
 ### 7.3 模型与审核兜底
 
-- **默认模型 `qwen3-max`**（阿里云百炼，与 CosyVoice 共用 Key）。设置里还可以选 `qwen-flash`（省钱）和 Grok。
+- **默认模型 `qwen3.8-max`**（阿里云百炼，与 CosyVoice 共用 Key；`qwen3-max` 已于 2026-10 前下线，1.3.6 起一次性迁移）。设置里还可以选 `qwen-flash`（省钱）和 Grok。
 - **流式调用**：大章节一次性返回要 2 分钟以上，会撞上 OkHttp 90 秒的读超时，导致整章失败。这就是 1.3.3 之前"章节之间要等几分钟"的根源。改成 SSE 流式之后，只要还在持续收数据就不会超时。
 - **阿里云内容审核误拦**：错误码 `data_inspection_failed`，提示 "Input data may contain inappropriate content"，程序里抛 `ContentBlocked`。普通网文也会触发。处理顺序（`analyseRobust`）：
   1. 如果填了 Grok Key 且开着"改用 Grok"开关，整段交给 Grok（`grok-4.20-0309-non-reasoning`，api.x.ai，需要代理）。
@@ -237,7 +237,7 @@ COSY_KEY  GEMINI_KEY  VOLC_KEY  GROK_KEY     各家 API Key（只放环境变量
 DRAMA_RES=drama_trap.txt                     DramaLiveTest 用哪本测试书（默认 drama_book.txt）
 TTS_OUT=/path                                把实际播放的每段音频和 played.tsv 拷出来
 FREE_VOICES=1                                对白也用 Edge（不花豆包和千问的钱）
-DIRECTOR_MODEL=qwen3-max|qwen-flash|grok-…   临时指定分析模型
+DIRECTOR_MODEL=qwen3.8-max|qwen-plus|qwen-flash|grok-…   临时指定分析模型
 SIMULATE_BLOCK_B64=<base64(触发文本)>         模拟阿里云审核拦截（用 base64 是因为环境变量里的中文会被弄乱）
 SIM_GROK_DOWN=1                              模拟 Grok 连不上
 DUMP_REPLY=/path                             导出每段的提示词和模型回复
