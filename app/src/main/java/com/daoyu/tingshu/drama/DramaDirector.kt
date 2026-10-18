@@ -76,14 +76,28 @@ class DramaDirector {
 
     fun cast(bookId: Long): StateFlow<Cast> = castFlow(bookId).asStateFlow()
 
+    /** Books whose cast.json could not be read. The file is kept as cast.json.broken and the listener is told. */
+    private val brokenCast = ConcurrentHashMap.newKeySet<Long>()
+
+    fun castBroken(bookId: Long): Boolean { castFlow(bookId); return bookId in brokenCast }
+
     private fun castFlow(bookId: Long) = casts.getOrPut(bookId) {
         val f = castFile(bookId)
-        MutableStateFlow(if (f.exists()) runCatching { json.decodeFromString<Cast>(f.readText()) }.getOrDefault(Cast()) else Cast())
+        val c = if (!f.exists()) Cast() else runCatching { json.decodeFromString<Cast>(f.readText()) }.getOrElse {
+            brokenCast.add(bookId)
+            runCatching { f.copyTo(File(f.path + ".broken"), overwrite = true) }
+            Cast()
+        }
+        MutableStateFlow(c)
     }
 
+    /** Writes the cast to disk first (atomically) and only then publishes it, so voices in use are always saved ones. */
     private fun saveCast(bookId: Long, c: Cast) {
+        val f = castFile(bookId)
+        val tmp = File(f.path + ".tmp")
+        tmp.writeText(json.encodeToString(Cast.serializer(), c))
+        if (!tmp.renameTo(f)) { f.delete(); if (!tmp.renameTo(f)) throw IOException("角色表保存失败") }
         castFlow(bookId).value = c
-        castFile(bookId).writeText(json.encodeToString(Cast.serializer(), c))
     }
 
     /** Follows merges; returns the member that actually speaks for [name], or null for narrator/passer-by. */
@@ -356,14 +370,14 @@ class DramaDirector {
      * anything it gets wrong falls back to a gender/age rule.
      */
     suspend fun ensureDoubaoVoices(bookId: Long) {
-        // automatic picks that landed on a flat voice (1.3.0) are chosen again
-        val flat = castFlow(bookId).value.members.filter { !it.doubaoUser && DoubaoVoices.isFlat(it.doubaoVoice) }
-        if (flat.isNotEmpty()) lock(bookId).withLock {
-            val c = castFlow(bookId).value
-            saveCast(bookId, c.copy(members = c.members.map { if (!it.doubaoUser && DoubaoVoices.isFlat(it.doubaoVoice)) it.copy(doubaoVoice = "") else it }))
-        }
+        // a voice once given to a character is never taken away automatically; only the listener changes it
         val todo = castFlow(bookId).value.members.filter { it.mergedInto == null && it.doubaoVoice.isEmpty() && !it.doubaoUser }
-        if (todo.isEmpty() || !picking.add(bookId)) return
+        if (todo.isEmpty()) return
+        if (!picking.add(bookId)) {
+            // another call is already choosing: wait for it, so callers only go on with saved voices
+            while (bookId in picking) delay(200)
+            return
+        }
         try {
             val picks = HashMap<String, String>()
             runCatching {
