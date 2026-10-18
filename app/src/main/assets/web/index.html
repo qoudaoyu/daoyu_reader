@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>刀鱼听书 · WiFi 传书</title>
+<style>
+  :root {
+    --paper: #fbf8f3; --card: #ffffff; --ink: #26231f; --soft: #6e675e; --faint: #a59d92;
+    --line: #e7e1d7; --accent: #3e6a8a; --gold: #c08a3e; --ok: #4f7a52; --err: #b0533c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 15px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 48px 24px 64px; }
+  header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 28px; }
+  h1 { margin: 0; font: 600 28px/1.2 "Songti SC", "SimSun", "Noto Serif SC", serif; letter-spacing: 2px; }
+  header span { color: var(--faint); font-size: 14px; }
+  .drop {
+    border: 1.5px dashed #cfc6b8; border-radius: 18px; background: var(--card);
+    padding: 52px 24px; text-align: center; cursor: pointer; transition: .18s;
+  }
+  .drop:hover, .drop.over { border-color: var(--gold); background: #fffaf2; }
+  .drop .big { font-size: 19px; font-weight: 600; margin-bottom: 6px; }
+  .drop .hint { color: var(--soft); font-size: 13px; }
+  .drop .fish { width: 54px; height: 54px; margin: 0 auto 14px; color: var(--gold); }
+  input[type=file] { display: none; }
+  .queue { margin-top: 18px; display: grid; gap: 8px; }
+  .item { background: var(--card); border-radius: 12px; padding: 12px 16px; border: 1px solid var(--line); }
+  .item .row { display: flex; justify-content: space-between; gap: 12px; }
+  .item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .st { color: var(--soft); font-size: 13px; white-space: nowrap; }
+  .item .st.ok { color: var(--ok); } .item .st.err { color: var(--err); }
+  .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--gold); transition: width .15s; }
+  h2 { font-size: 16px; margin: 40px 0 12px; display: flex; justify-content: space-between; align-items: baseline; }
+  h2 small { color: var(--faint); font-weight: 400; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+  td { padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 14px; }
+  tr:last-child td { border-bottom: 0; }
+  td.meta { color: var(--soft); white-space: nowrap; font-size: 13px; }
+  td.act { white-space: nowrap; text-align: right; }
+  td.act a { color: var(--accent); text-decoration: none; margin-left: 14px; cursor: pointer; font-size: 13px; }
+  td.act a.del { color: var(--err); }
+  .empty { color: var(--faint); text-align: center; padding: 26px; }
+  footer { margin-top: 36px; color: var(--faint); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1>刀鱼听书</h1><span>WiFi 传书</span></header>
+
+  <label class="drop" id="drop">
+    <svg class="fish" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 30c6-7 20-10 32-7 4 1 7 3 8 5l8-6-2 9 3 7-9-4c-4 3-12 5-20 4-9-1-16-3-20-8z"/>
+      <path d="M18 44q14 7 28 0M23 51q9 4 18 0"/>
+    </svg>
+    <div class="big">把书拖到这里，或点击选择文件</div>
+    <div class="hint">支持 TXT、EPUB，可一次选多本 · 手机请保持「WiFi 传书」页面打开</div>
+    <input type="file" id="file" multiple accept=".txt,.epub">
+  </label>
+
+  <div class="queue" id="queue"></div>
+
+  <h2>手机书架 <small id="count"></small></h2>
+  <table><tbody id="books"><tr><td class="empty">加载中…</td></tr></tbody></table>
+
+  <footer>电脑和手机需连接同一个 WiFi</footer>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const drop = $('#drop'), input = $('#file'), queue = $('#queue');
+const fmt = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', ev => enqueue(ev.dataTransfer.files));
+input.addEventListener('change', () => { enqueue(input.files); input.value = ''; });
+
+let busy = false; const pending = [];
+function enqueue(files) {
+  for (const f of files) {
+    const el = document.createElement('div');
+    el.className = 'item';
+    el.innerHTML = `<div class="row"><div class="name">${esc(f.name)}</div><div class="st">等待中 · ${fmt(f.size)}</div></div><div class="bar"><i></i></div>`;
+    queue.prepend(el);
+    pending.push({ f, el });
+  }
+  pump();
+}
+function pump() {
+  if (busy || !pending.length) return;
+  busy = true;
+  const { f, el } = pending.shift();
+  const st = el.querySelector('.st'), bar = el.querySelector('.bar i');
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload?name=' + encodeURIComponent(f.name));
+  xhr.upload.onprogress = e => { if (e.lengthComputable) { const p = e.loaded / e.total * 100; bar.style.width = p + '%'; st.textContent = p < 100 ? '上传中 ' + Math.round(p) + '%' : '解析中…'; } };
+  xhr.onload = () => {
+    let r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
+    if (r.ok) { st.textContent = r.duplicate ? '书架已有此书' : '已加入书架'; st.className = 'st ok'; }
+    else { st.textContent = r.error || ('失败 ' + xhr.status); st.className = 'st err'; }
+    bar.style.width = '100%';
+    busy = false; loadBooks(); pump();
+  };
+  xhr.onerror = () => { st.textContent = '连接中断，请确认手机仍在传书页面'; st.className = 'st err'; busy = false; pump(); };
+  xhr.send(f);
+}
+async function loadBooks() {
+  try {
+    const list = await (await fetch('/api/books')).json();
+    $('#count').textContent = list.length + ' 本';
+    $('#books').innerHTML = list.length ? list.map(b => `
+      <tr>
+        <td>${esc(b.title)}${b.author ? ' <span style="color:var(--faint)">· ' + esc(b.author) + '</span>' : ''}</td>
+        <td class="meta">${b.format.toUpperCase()} · ${fmt(b.size)} · 已读 ${Math.round(b.progress * 100)}%</td>
+        <td class="act"><a href="/api/books/${b.id}/download">下载</a><a class="del" data-id="${b.id}" data-t="${esc(b.title)}">删除</a></td>
+      </tr>`).join('') : '<tr><td class="empty">书架还是空的</td></tr>';
+  } catch (e) {
+    $('#books').innerHTML = '<tr><td class="empty">无法连接手机</td></tr>';
+  }
+}
+$('#books').addEventListener('click', async e => {
+  const a = e.target.closest('a.del'); if (!a) return;
+  if (!confirm('从手机书架删除《' + a.dataset.t + '》？')) return;
+  await fetch('/api/books/' + a.dataset.id, { method: 'DELETE' });
+  loadBooks();
+});
+loadBooks();
+</script>
+</body>
+</html>
