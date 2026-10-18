@@ -520,7 +520,7 @@ class TtsController(private val context: Context) {
         if (!seg.drama) return Engines.all.map { cacheFile(engineOf(it), settings(), seg.text) }
         val v = dramaVoiceOf(seg)
         return listOfNotNull(
-            v.doubaoVoice?.takeIf { it.isNotEmpty() }?.let { hashName("db|$it|${v.doubaoInstruct}|${seg.text}", "mp3") },
+            v.doubaoVoice?.takeIf { it.isNotEmpty() }?.let { hashName("db|$it|${v.doubaoInstruct}|${seg.text}", "wav") },
             v.qwenVoice?.let { hashName("dq|$it|${v.instruct}|${seg.text}", "wav") },
             hashName("de|${v.edgeVoice}|${settings().edgeRate}|${seg.text}", "mp3"),
         )
@@ -546,7 +546,7 @@ class TtsController(private val context: Context) {
             if (voice.isNullOrEmpty()) return fail(seg, "${who}还没能分配音色（${director.lastError ?: "角色表保存失败"}），已暂停，$fix")
             if (overLimit(Engines.DOUBAO, s)) return fail(seg, "豆包语音已达本月用量上限，已暂停。可在设置里调高上限")
             val instruct = v.doubaoInstruct
-            val out = hashName("db|$voice|$instruct|${seg.text}", "mp3")
+            val out = hashName("db|$voice|$instruct|${seg.text}", "wav")
             val err = synthInto(out, Engines.DOUBAO, seg.text) { DoubaoTts.synthesize(seg.text, voice, instruct, it) }
             return if (err == null) out else fail(seg, "${who}暂时不可用：$err。已暂停，$fix")
         }
@@ -722,7 +722,7 @@ class TtsController(private val context: Context) {
     } catch (e: Exception) { e.message ?: e.javaClass.simpleName }
 
     suspend fun previewDoubao(voice: String, text: String): String? {
-        val out = File(context.cacheDir, "preview_db_${(voice + text).hashCode()}.mp3")
+        val out = File(context.cacheDir, "preview_db_${(voice + text).hashCode()}.wav")
         return try {
             if (!out.exists() || out.length() < 200) DoubaoTts.synthesize(text, voice, "", out)
             previewFile(out)

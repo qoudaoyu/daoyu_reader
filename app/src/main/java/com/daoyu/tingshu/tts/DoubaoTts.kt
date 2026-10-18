@@ -22,19 +22,20 @@ import java.util.UUID
 
 /**
  * 豆包语音合成 2.0 (Volcengine seed-tts-2.0), HTTP one-way streaming API with a new-console API key.
- * The reply is a stream of JSON lines carrying base64 MP3 chunks. A free-form instruction
+ * The reply is a stream of JSON lines carrying base64 PCM chunks, saved as loudness-normalised WAV. A free-form instruction
  * ("用压抑着怒火的语气说") goes into additions.context_texts and is not billed.
  */
 object DoubaoTts {
     private const val URL = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
     const val RESOURCE = "seed-tts-2.0"
+    private const val RATE = 24000
 
     internal fun body(text: String, speaker: String, instruction: String): String = buildJsonObject {
         putJsonObject("user") { put("uid", "daoyu") }
         putJsonObject("req_params") {
             put("text", text)
             put("speaker", speaker)
-            putJsonObject("audio_params") { put("format", "mp3"); put("sample_rate", 24000) }
+            putJsonObject("audio_params") { put("format", "pcm"); put("sample_rate", RATE) }
             if (instruction.isNotBlank()) {
                 put("additions", buildJsonObject {
                     put("context_texts", kotlinx.serialization.json.buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive(instruction.take(240))) })
@@ -43,7 +44,7 @@ object DoubaoTts {
         }
     }.toString()
 
-    /** Synthesizes [text] into [out] (MP3). Returns the number of characters billed (the text length). */
+    /** Synthesizes [text] into [out] (WAV). Returns the number of characters billed (the text length). */
     suspend fun synthesize(text: String, speaker: String, instruction: String, out: File): SynthInfo = withContext(Dispatchers.IO) {
         val key = App.instance.keys.volcKey
         if (key.isBlank()) throw TtsException("未填写火山引擎 API Key")
@@ -57,6 +58,7 @@ object DoubaoTts {
                 .build()
             var errMsg: String? = null
             var errCode = 0
+            val os = java.io.ByteArrayOutputStream()
             try {
                 Http.client.newCall(req).execute().use { r ->
                     val src = r.body?.source() ?: throw TtsException("豆包语音没有返回内容", skipEngine = false)
@@ -68,16 +70,14 @@ object DoubaoTts {
                         if (r.code == 429 || r.code >= 500) errCode = -r.code
                         return@use
                     }
-                    out.outputStream().use { os ->
-                        while (!src.exhausted()) {
-                            val line = src.readUtf8Line() ?: break
-                            if (line.isBlank()) continue
-                            val o = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: continue
-                            val code = o["code"]?.jsonPrimitive?.intOrNull ?: 0
-                            val data = o["data"]?.jsonPrimitive?.contentOrNull
-                            if (!data.isNullOrEmpty()) os.write(Base64.decode(data, Base64.DEFAULT))
-                            if (code != 0 && code != 20000000) { errCode = code; errMsg = o["message"]?.jsonPrimitive?.contentOrNull ?: "错误 $code" }
-                        }
+                    while (!src.exhausted()) {
+                        val line = src.readUtf8Line() ?: break
+                        if (line.isBlank()) continue
+                        val o = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: continue
+                        val code = o["code"]?.jsonPrimitive?.intOrNull ?: 0
+                        val data = o["data"]?.jsonPrimitive?.contentOrNull
+                        if (!data.isNullOrEmpty()) os.write(Base64.decode(data, Base64.DEFAULT))
+                        if (code != 0 && code != 20000000) { errCode = code; errMsg = o["message"]?.jsonPrimitive?.contentOrNull ?: "错误 $code" }
                     }
                 }
             } catch (e: IOException) {
@@ -92,7 +92,10 @@ object DoubaoTts {
                     m.contains("Unauthorized", true) || m.contains("api key", true) || m.contains("resource", true) || m.contains("余额") || m.contains("额度")
                 throw TtsException("豆包语音：$m", skipEngine = skip)
             }
-            if (out.length() < 200) throw TtsException("豆包语音没有返回音频", skipEngine = false)
+            val pcm = os.toByteArray()
+            if (pcm.size < 200) throw TtsException("豆包语音没有返回音频", skipEngine = false)
+            // each request comes back at its own level (3–6 dB apart); evened out so the voice does not suddenly drop
+            writeWav(Loudness.normalize(pcm), RATE, out)
             return@withContext SynthInfo(billedChars = text.length.toLong())
         }
         @Suppress("UNREACHABLE_CODE") error("unreachable")

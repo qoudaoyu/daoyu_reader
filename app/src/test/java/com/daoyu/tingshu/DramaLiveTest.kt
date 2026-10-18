@@ -73,7 +73,7 @@ class DramaLiveTest {
             val v1 = File(out, "v1").apply { mkdirs() }
             app.tts.emotionV1ForTest = true
             playedSegs.forEachIndexed { i, seg ->
-                runBlocking { app.tts.synthesizeDramaForTest(seg) }?.copyTo(File(v1, String.format("%03d.mp3", i + 1)), overwrite = true)
+                runBlocking { app.tts.synthesizeDramaForTest(seg) }?.copyTo(File(v1, String.format("%03d.wav", i + 1)), overwrite = true)
             }
             app.tts.emotionV1ForTest = false
             File(out, "segs.tsv").writeText(playedSegs.joinToString("\n") { "${it.role ?: "旁白"}\t${it.intensity}\t${it.emotion}\t${it.text}" })
