@@ -34,6 +34,7 @@ data class RoleLine(
     val end: Int,
     val speaker: String,                // canonical name, "旁白", "路人" or "路人女"
     val emotion: String = "",
+    val intensity: Int = -1,            // 0 calm … 3 intense; -1 = not analysed (older results)
     val manual: Boolean = false,        // corrected by the user
 )
 
@@ -41,7 +42,7 @@ data class RoleLine(
 data class ChapterRoles(val version: Int = 1, val lines: List<RoleLine> = emptyList())
 
 /** Results older than this are re-analysed (keeping the user's manual corrections). */
-const val ROLES_VERSION = 4   // 4: unnamed female speakers are "路人女"
+const val ROLES_VERSION = 5   // 4: unnamed female speakers are "路人女"; 5: emotion intensity
 
 object Roles {
     const val NARRATOR = "旁白"

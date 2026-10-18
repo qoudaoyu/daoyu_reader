@@ -52,9 +52,11 @@ class DramaLiveTest {
         val book = runBlocking { app.db.books().get(book0.id)!! }
 
         val played = ArrayList<String>()
+        val playedSegs = ArrayList<com.daoyu.tingshu.tts.Seg>()
         val msgs = java.util.Collections.synchronizedList(ArrayList<String>())
         app.tts.onPlay = { seg, f ->
             val copy = File(out, String.format("%03d.%s", played.size + 1, f.extension)); f.copyTo(copy, overwrite = true)
+            playedSegs.add(seg)
             played.add("${copy.absolutePath}\t${seg.chapter}\t${seg.role ?: "旁白"}\t${seg.text.replace('\n', ' ')}")
         }
         val job = kotlinx.coroutines.GlobalScope.launch0 { app.tts.messages.collect { msgs.add(it) } }
@@ -66,6 +68,16 @@ class DramaLiveTest {
         job.cancel()
         println("DRAMA finished in ${(System.currentTimeMillis() - t0) / 1000}s, messages=$msgs, segments=${played.size}")
         File(out, "played.tsv").writeText(played.joinToString("\n"))
+        // A/B: the same lines voiced the 1.3.7 way (every line acted out, no preceding text), into $TTS_OUT/v1
+        if (System.getenv("EMOTION_AB") != null) {
+            val v1 = File(out, "v1").apply { mkdirs() }
+            app.tts.emotionV1ForTest = true
+            playedSegs.forEachIndexed { i, seg ->
+                runBlocking { app.tts.synthesizeDramaForTest(seg) }?.copyTo(File(v1, String.format("%03d.mp3", i + 1)), overwrite = true)
+            }
+            app.tts.emotionV1ForTest = false
+            File(out, "segs.tsv").writeText(playedSegs.joinToString("\n") { "${it.role ?: "旁白"}\t${it.intensity}\t${it.emotion}\t${it.text}" })
+        }
         val cast = app.director.cast(book.id).value
         cast.members.forEach { println("CAST ${it.name} ${it.gender}/${it.age} voice=${it.voice} lines=${it.lines} aliases=${it.aliases} db=${it.doubaoVoice} desc=${it.voiceDesc}") }
         (0 until book.chapterCount).forEach { ch ->

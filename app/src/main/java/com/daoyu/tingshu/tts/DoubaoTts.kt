@@ -37,7 +37,7 @@ object DoubaoTts {
             putJsonObject("audio_params") { put("format", "mp3"); put("sample_rate", 24000) }
             if (instruction.isNotBlank()) {
                 put("additions", buildJsonObject {
-                    put("context_texts", kotlinx.serialization.json.buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive(instruction.take(120))) })
+                    put("context_texts", kotlinx.serialization.json.buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive(instruction.take(240))) })
                 }.toString())
             }
         }

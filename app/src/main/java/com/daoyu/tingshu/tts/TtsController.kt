@@ -453,16 +453,16 @@ class TtsController(private val context: Context) {
             val female = seg.role == Roles.PASSERBY_F
             val edge = if (female) "zh-CN-XiaoyiNeural" else "zh-CN-YunjianNeural"
             val db = if (director.usesDoubao() && !freeVoicesForTest) (if (female) DoubaoVoices.PASSERBY_F else DoubaoVoices.PASSERBY_M) else null
-            return DramaVoice(seg.role, db, doubaoInstruction(seg.emotion), null, "", edge)
+            return DramaVoice(seg.role, db, doubaoInstruction(seg), null, "", edge)
         }
         if (m == null) {
             val db = if (director.narratesWithDoubao() && !freeVoicesForTest) director.narratorDoubao(b.id) else null
-            return DramaVoice(null, db, if (db != null) NARRATION else "", null, "", narrator)
+            return DramaVoice(null, db, if (db != null) withContext(seg, NARRATION) else "", null, "", narrator)
         }
         val fallback = if (m.gender.startsWith("女")) "zh-CN-XiaoyiNeural" else "zh-CN-YunjianNeural"
         if (freeVoicesForTest) return DramaVoice(m.name, null, "", null, "", fallback)
         // 豆包: the voice already carries age and temperament; the line's mood goes in as an unbilled instruction
-        if (director.usesDoubao()) return DramaVoice(m.name, m.doubaoVoice, doubaoInstruction(seg.emotion), null, "", fallback)
+        if (director.usesDoubao()) return DramaVoice(m.name, m.doubaoVoice, doubaoInstruction(seg), null, "", fallback)
         if (m.voice.isEmpty()) return DramaVoice(m.name, null, "", null, "", fallback)
         // a designed Qwen voice already sounds like the character and ignores instructions
         if (VoicePools.isDesigned(m.voice)) return DramaVoice(m.name, null, "", m.voice, "", fallback)
@@ -471,12 +471,38 @@ class TtsController(private val context: Context) {
     }
 
     /** 豆包 follows a vivid, voice-only direction best; older analyses only have a short mood word. */
-    private fun doubaoInstruction(emotion: String): String {
-        val e = emotion.trim().trimEnd('。')
-        if (e.isEmpty()) return ""
-        val tone = if (e.startsWith("用") && e.endsWith("说")) e else "用${e}的语气说"
-        return "像影视剧演员一样把情绪演足，$tone"
+    private fun doubaoInstruction(seg: Seg): String {
+        val e = seg.emotion.trim().trimEnd('。')
+        if (emotionV1ForTest) return if (e.isEmpty()) "" else "像影视剧演员一样把情绪演足，" + (if (e.startsWith("用") && e.endsWith("说")) e else "用${e}的语气说")
+        val tone = when {
+            e.isEmpty() || seg.intensity == 0 -> ""        // everyday lines: no acting direction, 豆包 reads them naturally
+            e.startsWith("用") && e.endsWith("说") -> e
+            else -> "用${e}的语气说"
+        }
+        // only clearly emotional lines (or older analyses without an intensity) are pushed to act it out fully
+        val inst = if (tone.isNotEmpty() && (seg.intensity >= 2 || seg.intensity < 0)) "像影视剧演员一样把情绪演足，$tone" else tone
+        return withContext(seg, inst)
     }
+
+    /**
+     * Adds the original text just before [seg] as reference for 豆包 (context_texts is not read aloud or billed),
+     * so a line is voiced knowing what just happened. Up to ~80 characters of the same chapter.
+     */
+    private fun withContext(seg: Seg, instruction: String): String {
+        if (emotionV1ForTest) return instruction
+        val before = runCatching {
+            val q = queue.toList()   // a concurrent rebuild only costs this line its context
+            val i = q.indexOf(seg)
+            if (i <= 0) "" else q.subList(maxOf(0, i - 3), i).filter { it.chapter == seg.chapter }.joinToString("") { it.text }.takeLast(80)
+        }.getOrDefault("")
+        if (before.isBlank()) return instruction
+        return "上文（只作参考，不要读出来）：$before\n" + instruction.ifEmpty { "自然地接着说" }
+    }
+
+    /** A/B tests: the 1.3.7 behaviour (every line "演足", no preceding text). */
+    internal var emotionV1ForTest = false
+
+    internal suspend fun synthesizeDramaForTest(seg: Seg): File? = synthesizeDrama(seg)
 
     /** Narration keeps an even storyteller tone; the line's own mood belongs to the characters. */
     private val NARRATION = "用说书人的口吻，从容平稳地叙述"
