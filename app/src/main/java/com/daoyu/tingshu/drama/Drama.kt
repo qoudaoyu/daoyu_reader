@@ -24,6 +24,7 @@ data class CastMember(
 data class Cast(
     val members: List<CastMember> = emptyList(),
     val narratorVoice: String? = null,  // Edge voice for narration; null = settings default
+    val narratorDoubao: String? = null, // 豆包 voice for narration; null = settings default
 )
 
 /** A quoted line inside a chapter body: [start, end) covers the quote marks too. */

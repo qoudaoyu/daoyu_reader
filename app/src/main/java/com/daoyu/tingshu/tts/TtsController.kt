@@ -430,7 +430,8 @@ class TtsController(private val context: Context) {
 
     /**
      * Voices for one multi-role segment. [doubaoVoice] is non-null when 豆包 voices the characters; it is ""
-     * while the character has no saved voice yet. Narration and characters without a Qwen voice use Edge.
+     * while the character has no saved voice yet; for narration it is the narrator's 豆包 voice, if 豆包 narrates.
+     * Otherwise narration and characters without a Qwen voice use Edge.
      */
     private data class DramaVoice(
         val role: String?,                  // canonical character name; null = narrator / passer-by
@@ -444,7 +445,10 @@ class TtsController(private val context: Context) {
         val b = book!!
         val narrator = director.cast(b.id).value.narratorVoice ?: s.dramaNarratorVoice
         val m = seg.role?.let { director.resolve(b.id, it) }
-        if (m == null) return DramaVoice(null, null, "", null, "", narrator)
+        if (m == null) {
+            val db = if (director.narratesWithDoubao() && !freeVoicesForTest) director.narratorDoubao(b.id) else null
+            return DramaVoice(null, db, if (db != null) NARRATION else "", null, "", narrator)
+        }
         val fallback = if (m.gender.startsWith("女")) "zh-CN-XiaoyiNeural" else "zh-CN-YunjianNeural"
         if (freeVoicesForTest) return DramaVoice(m.name, null, "", null, "", fallback)
         // 豆包: the voice already carries age and temperament; the line's mood goes in as an unbilled instruction
@@ -464,6 +468,9 @@ class TtsController(private val context: Context) {
         return "像影视剧演员一样把情绪演足，$tone"
     }
 
+    /** Narration keeps an even storyteller tone; the line's own mood belongs to the characters. */
+    private val NARRATION = "用说书人的口吻，从容平稳地叙述"
+
     /** Tests that only measure pacing use free Edge voices for dialogue too. */
     internal var freeVoicesForTest = false
 
@@ -481,7 +488,7 @@ class TtsController(private val context: Context) {
     }
 
     /**
-     * Multi-role: each character speaks with its saved 豆包 (or Qwen) voice, narration with Edge.
+     * Multi-role: each character speaks with its saved 豆包 (or Qwen) voice, narration with 豆包 or Edge.
      * A voice that fails is never swapped for another engine or voice behind the listener's back: the
      * segment fails, playback pauses there, and the listener retries or picks another voice in the cast.
      */
@@ -490,8 +497,8 @@ class TtsController(private val context: Context) {
         var v = dramaVoiceOf(seg)
         val who = v.role?.let { "「$it」的配音" } ?: "旁白"
         val fix = if (v.role != null) "点播放重试，或到角色表换一个音色" else "点播放重试"
-        if (v.role != null && v.doubaoVoice != null) {
-            if (v.doubaoVoice.isNullOrEmpty()) {
+        if (v.doubaoVoice != null) {
+            if (v.role != null && v.doubaoVoice.isNullOrEmpty()) {
                 // first line of a new character: choose and save its voice before anything is played with it
                 runCatching { director.ensureDoubaoVoices(book!!.id) }
                 v = dramaVoiceOf(seg)

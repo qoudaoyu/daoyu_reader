@@ -107,14 +107,20 @@ fun ListenPanel(book: Book?, theme: ReaderTheme, onStart: () -> Unit, onOpenSett
 
             if (drama) {
                 Text("旁白用免费的微软 Edge 语音，对白由通义千问按角色配音（约 0.6 元/万字）。进度与单人说书共用，可随时切换。", color = theme.secondary, fontSize = 12.sp, lineHeight = 17.sp)
-                val castNarrator = book?.let { app.director.cast(it.id).collectAsState().value.narratorVoice }
-                val narrator = castNarrator ?: s.dramaNarratorVoice
+                val doubao = app.director.narratesWithDoubao()
+                val cast = book?.let { app.director.cast(it.id).collectAsState().value }
+                val narrator = if (doubao) cast?.narratorDoubao ?: s.dramaNarratorDoubao else cast?.narratorVoice ?: s.dramaNarratorVoice
                 Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                     Label("旁白", theme)
-                    Engines.edgeVoices.take(6).forEach { v ->
+                    (if (doubao) com.daoyu.tingshu.drama.DoubaoVoices.narrators else Engines.edgeVoices.take(6)).forEach { v ->
                         Chip("${v.name}  ${v.desc.substringBefore(' ')}", v.id == narrator, theme) {
                             scope.launch {
-                                if (book != null) app.director.setNarrator(book.id, v.id) else app.settings.updateTts { it.copy(dramaNarratorVoice = v.id) }
+                                when {
+                                    book != null && doubao -> app.director.setNarratorDoubao(book.id, v.id)
+                                    book != null -> app.director.setNarrator(book.id, v.id)
+                                    doubao -> app.settings.updateTts { it.copy(dramaNarratorDoubao = v.id) }
+                                    else -> app.settings.updateTts { it.copy(dramaNarratorVoice = v.id) }
+                                }
                                 app.tts.onSettingsChanged()
                             }
                         }

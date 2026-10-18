@@ -235,11 +235,17 @@ object DoubaoVoices {
 
     fun byId(id: String) = all.firstOrNull { it.id == id }
 
+    /** Calm, even voices offered for narration (not yet blind-tested as narrators). */
+    val narrators: List<com.daoyu.tingshu.tts.Voice> = listOf(
+        b("male_m191"), r("male_wenrunxuezhe"), b("male_cixingjieshuonan"), b("male_shenyeboke"),
+        b("female_xiaohe"), b("female_wenrouxiaoya"),
+    ).map { id -> byId(id)!!.let { com.daoyu.tingshu.tts.Voice(it.id, it.name, "${it.gender}声 · ${it.desc}") } }
+
     /** Voices below this are only used when the user picks them. */
     const val MIN_EXPR = 4f
 
     /** Rule-based choice: same gender and age band, expressive voices first, least used so far. */
-    fun assign(gender: String, age: String, cast: List<CastMember>): String {
+    fun assign(gender: String, age: String, cast: List<CastMember>, avoid: String? = null): String {
         val female = gender.startsWith("女")
         val used = cast.filter { it.mergedInto == null && it.doubaoVoice.isNotEmpty() }.groupingBy { it.doubaoVoice }.eachCount()
         val a = VoicePools.ageKey(age)
@@ -251,7 +257,7 @@ object DoubaoVoices {
             else -> listOf("青年", "少年", "中年")
         }
         for (band in order) {
-            val pool = all.filter { (it.gender == "女") == female && it.age == band && it.expr >= MIN_EXPR }
+            val pool = all.filter { (it.gender == "女") == female && it.age == band && it.expr >= MIN_EXPR && it.id != avoid }
             if (pool.isNotEmpty()) return pool.sortedWith(compareBy<DbVoice> { used[it.id] ?: 0 }.thenByDescending { it.expr }).first().id
         }
         return all.filter { (it.gender == "女") == female }.maxByOrNull { it.expr }!!.id

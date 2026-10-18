@@ -65,6 +65,9 @@ data class TtsSettings(
     val qwenMonthlyLimit: Int = 0,                     // 万字, 0 = unlimited
     // multi-role mode: free Edge narrator + Qwen character voices, speakers worked out by Qwen-Plus
     val dramaNarratorVoice: String = "zh-CN-YunxiNeural",
+    // 1.3.6: Edge rejects the app (403), so narration moved to 豆包 when its key is set; "edge" keeps the free voice
+    val dramaNarratorEngine: String = "doubao",        // doubao / edge
+    val dramaNarratorDoubao: String = "zh_male_m191_uranus_bigtts",
     val directorModel: String = "qwen3-max",
     val directorInPrice: Float = 2.5f,                 // 元 / 百万 tokens
     val directorOutPrice: Float = 10f,

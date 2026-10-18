@@ -118,6 +118,16 @@ class DramaDirector {
         saveCast(bookId, castFlow(bookId).value.copy(narratorVoice = edgeVoice))
     }
 
+    suspend fun setNarratorDoubao(bookId: Long, voice: String) = lock(bookId).withLock {
+        saveCast(bookId, castFlow(bookId).value.copy(narratorDoubao = voice))
+    }
+
+    /** True when narration is voiced by 豆包 rather than Edge. */
+    fun narratesWithDoubao(): Boolean = usesDoubao() && app.settings.tts.value.dramaNarratorEngine == "doubao"
+
+    /** The 豆包 voice narrating [bookId]; characters are not given this voice automatically. */
+    fun narratorDoubao(bookId: Long): String = cast(bookId).value.narratorDoubao ?: app.settings.tts.value.dramaNarratorDoubao
+
     /** "A is really B": A's lines are spoken with B's voice from now on. */
     suspend fun merge(bookId: Long, from: String, into: String) = lock(bookId).withLock {
         if (from == into) return@withLock
@@ -383,13 +393,14 @@ class DramaDirector {
             runCatching {
                 val taken = castFlow(bookId).value.members.filter { it.mergedInto == null && it.doubaoVoice.isNotEmpty() }
                     .sortedByDescending { it.lines }.take(20)
+                val narrator = if (narratesWithDoubao()) "\n旁白 → ${narratorDoubao(bookId)}（不要选这个）" else ""
                 val prompt = """你是有声书配音导演。请从下面的豆包音色库里，为每个新角色挑选最贴合的音色。
 要求：性别必须一致；年龄段尽量一致；优先匹配角色的性格与嗓音描述；同等合适时选"表现力"分高的（分数是实测的情绪表现力，越高越有戏）；不要和"已占用"里的主要角色重复，除非实在没有合适的。
 音色库（id|名称|性别|年龄|特点|表现力）：
 ${DoubaoVoices.catalogText(todo.map { if (it.gender.startsWith("女")) "女" else "男" }.toSet())}
 
 已占用：
-${taken.joinToString("\n") { "${it.name}（${it.gender}，${it.age}）→ ${it.doubaoVoice}" }.ifEmpty { "无" }}
+${taken.joinToString("\n") { "${it.name}（${it.gender}，${it.age}）→ ${it.doubaoVoice}" }.ifEmpty { "无" }}$narrator
 
 新角色：
 ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceDesc.ifEmpty { "无描述" }}｜已说 ${it.lines} 句" }}
@@ -404,11 +415,12 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
                 }
             }.onFailure { lastError = it.message }
             lock(bookId).withLock {
+                val narrator = if (narratesWithDoubao()) narratorDoubao(bookId) else null
                 val members = castFlow(bookId).value.members.toMutableList()
                 for (i in members.indices) {
                     val m = members[i]
                     if (m.mergedInto != null || m.doubaoVoice.isNotEmpty() || m.doubaoUser) continue
-                    val v = picks[m.name]?.takeIf { DoubaoVoices.acceptable(it, m.gender) } ?: DoubaoVoices.assign(m.gender, m.age, members)
+                    val v = picks[m.name]?.takeIf { DoubaoVoices.acceptable(it, m.gender) && it != narrator } ?: DoubaoVoices.assign(m.gender, m.age, members, narrator)
                     members[i] = m.copy(doubaoVoice = v)
                 }
                 saveCast(bookId, castFlow(bookId).value.copy(members = members))

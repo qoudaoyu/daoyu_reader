@@ -196,8 +196,11 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             Section("多角色说书") {
                 Text("旁白用免费的微软 Edge 语音，对白由通义千问按角色配音；谁在说话由通义千问大模型分析（与上面同一个阿里云 Key）。在听书面板里可随时切换单人 / 多角色。", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
+                ChoiceRow("旁白配音", listOf("doubao" to "豆包 2.0", "edge" to "微软 Edge（免费）"), tts.dramaNarratorEngine) { v -> upd { it.copy(dramaNarratorEngine = v) } }
+                Hint("微软 Edge 目前拒绝本 App 访问（403），旁白默认改用豆包，按全文字数计费，约 2.8 元/万字。没填火山引擎 Key 时仍用 Edge。")
                 Text("新书默认旁白", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                VoicePicker(Engines.edgeVoices.take(6), tts.dramaNarratorVoice) { v -> upd { it.copy(dramaNarratorVoice = v) } }
+                if (tts.dramaNarratorEngine == "doubao") VoicePicker(com.daoyu.tingshu.drama.DoubaoVoices.narrators, tts.dramaNarratorDoubao) { v -> upd { it.copy(dramaNarratorDoubao = v) } }
+                else VoicePicker(Engines.edgeVoices.take(6), tts.dramaNarratorVoice) { v -> upd { it.copy(dramaNarratorVoice = v) } }
                 ChoiceRow("角色分析模型", listOf("qwen3-max" to "千问 Max（推荐）", "qwen-flash" to "千问 Flash（省钱）", com.daoyu.tingshu.drama.DramaDirector.GROK_MODEL to "Grok（需代理）"), tts.directorModel) { m ->
                     upd { it.copy(directorModel = m, directorInPrice = when (m) { "qwen3-max" -> 2.5f; "qwen-plus" -> 0.8f; "qwen-flash" -> 0.15f; else -> 9f }, directorOutPrice = when (m) { "qwen3-max" -> 10f; "qwen-plus" -> 2f; "qwen-flash" -> 1.5f; else -> 18f }) }
                 }
