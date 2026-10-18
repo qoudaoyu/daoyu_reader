@@ -457,7 +457,9 @@ class TtsController(private val context: Context) {
         }
         if (m == null) {
             val db = if (director.narratesWithDoubao() && !freeVoicesForTest) director.narratorDoubao(b.id) else null
-            return DramaVoice(null, db, if (db != null) withContext(seg, NARRATION) else "", null, "", narrator)
+            // no preceding text for narration: with a character's line as context 豆包 reads it higher and brighter,
+            // so the narrator seemed to change voice from paragraph to paragraph (1.3.8)
+            return DramaVoice(null, db, if (db != null) NARRATION else "", null, "", narrator)
         }
         val fallback = if (m.gender.startsWith("女")) "zh-CN-XiaoyiNeural" else "zh-CN-YunjianNeural"
         if (freeVoicesForTest) return DramaVoice(m.name, null, "", null, "", fallback)
@@ -485,15 +487,16 @@ class TtsController(private val context: Context) {
     }
 
     /**
-     * Adds the original text just before [seg] as reference for 豆包 (context_texts is not read aloud or billed),
-     * so a line is voiced knowing what just happened. Up to ~80 characters of the same chapter.
+     * Adds the narration just before [seg] as reference for 豆包 (context_texts is not read aloud or billed),
+     * so a line is voiced knowing what just happened. Up to ~80 characters of the same chapter. Other speakers'
+     * lines are left out: 豆包 drifts towards the voice of whatever line it is given.
      */
     private fun withContext(seg: Seg, instruction: String): String {
         if (emotionV1ForTest) return instruction
         val before = runCatching {
             val q = queue.toList()   // a concurrent rebuild only costs this line its context
             val i = q.indexOf(seg)
-            if (i <= 0) "" else q.subList(maxOf(0, i - 3), i).filter { it.chapter == seg.chapter }.joinToString("") { it.text }.takeLast(80)
+            if (i <= 0) "" else q.subList(maxOf(0, i - 3), i).filter { it.chapter == seg.chapter && it.role == null }.joinToString("") { it.text }.takeLast(80)
         }.getOrDefault("")
         if (before.isBlank()) return instruction
         return "上文（只作参考，不要读出来）：$before\n" + instruction.ifEmpty { "自然地接着说" }
