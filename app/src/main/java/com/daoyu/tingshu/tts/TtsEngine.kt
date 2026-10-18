@@ -46,3 +46,34 @@ fun writeWav(pcm: ByteArray, sampleRate: Int, out: File) {
     }.array()
     out.outputStream().use { it.write(header); it.write(pcm) }
 }
+
+/** Evens out the level of separately synthesized clips, so one segment is not suddenly quieter than the next. */
+object Loudness {
+    private const val FRAME = 480                 // 20 ms at 24 kHz
+    private const val SILENCE = 327.68            // -40 dBFS: pauses are left out of the measurement
+    private const val TARGET = 3276.8             // -20 dBFS speech level (豆包 clips measured -15 … -28)
+
+    /** 16-bit little-endian mono PCM in, the same scaled to the target level out (gain 0.3–3, never clipping). */
+    fun normalize(pcm: ByteArray): ByteArray {
+        val n = pcm.size / 2
+        if (n < FRAME) return pcm
+        val s = ShortArray(n) { ((pcm[2 * it].toInt() and 0xff) or (pcm[2 * it + 1].toInt() shl 8)).toShort() }
+        var sum = 0.0
+        var count = 0
+        var peak = 1
+        for (f in 0 until n / FRAME) {
+            var e = 0.0
+            for (i in f * FRAME until (f + 1) * FRAME) e += s[i].toDouble() * s[i]
+            if (kotlin.math.sqrt(e / FRAME) > SILENCE) { sum += e; count += FRAME }
+        }
+        for (v in s) peak = maxOf(peak, kotlin.math.abs(v.toInt()))
+        if (count == 0) return pcm
+        val gain = (TARGET / kotlin.math.sqrt(sum / count)).coerceIn(0.3, 3.0).coerceAtMost(0.97 * 32767 / peak)
+        val out = ByteArray(n * 2)
+        for (i in 0 until n) {
+            val v = (s[i] * gain).toInt().coerceIn(-32768, 32767)
+            out[2 * i] = v.toByte(); out[2 * i + 1] = (v shr 8).toByte()
+        }
+        return out
+    }
+}

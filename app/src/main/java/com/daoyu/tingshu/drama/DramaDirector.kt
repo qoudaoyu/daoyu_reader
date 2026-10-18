@@ -4,6 +4,7 @@ import com.daoyu.tingshu.App
 import com.daoyu.tingshu.data.TtsUsage
 import com.daoyu.tingshu.tts.Http
 import com.daoyu.tingshu.tts.TtsException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -117,6 +118,16 @@ class DramaDirector {
     suspend fun setNarrator(bookId: Long, edgeVoice: String) = lock(bookId).withLock {
         saveCast(bookId, castFlow(bookId).value.copy(narratorVoice = edgeVoice))
     }
+
+    suspend fun setNarratorDoubao(bookId: Long, voice: String) = lock(bookId).withLock {
+        saveCast(bookId, castFlow(bookId).value.copy(narratorDoubao = voice))
+    }
+
+    /** True when narration is voiced by 豆包 rather than Edge. */
+    fun narratesWithDoubao(): Boolean = usesDoubao() && app.settings.tts.value.dramaNarratorEngine == "doubao"
+
+    /** The 豆包 voice narrating [bookId]; characters are not given this voice automatically. */
+    fun narratorDoubao(bookId: Long): String = cast(bookId).value.narratorDoubao ?: app.settings.tts.value.dramaNarratorDoubao
 
     /** "A is really B": A's lines are spoken with B's voice from now on. */
     suspend fun merge(bookId: Long, from: String, into: String) = lock(bookId).withLock {
@@ -383,13 +394,14 @@ class DramaDirector {
             runCatching {
                 val taken = castFlow(bookId).value.members.filter { it.mergedInto == null && it.doubaoVoice.isNotEmpty() }
                     .sortedByDescending { it.lines }.take(20)
+                val narrator = if (narratesWithDoubao()) "\n旁白 → ${narratorDoubao(bookId)}（不要选这个）" else ""
                 val prompt = """你是有声书配音导演。请从下面的豆包音色库里，为每个新角色挑选最贴合的音色。
 要求：性别必须一致；年龄段尽量一致；优先匹配角色的性格与嗓音描述；同等合适时选"表现力"分高的（分数是实测的情绪表现力，越高越有戏）；不要和"已占用"里的主要角色重复，除非实在没有合适的。
 音色库（id|名称|性别|年龄|特点|表现力）：
 ${DoubaoVoices.catalogText(todo.map { if (it.gender.startsWith("女")) "女" else "男" }.toSet())}
 
 已占用：
-${taken.joinToString("\n") { "${it.name}（${it.gender}，${it.age}）→ ${it.doubaoVoice}" }.ifEmpty { "无" }}
+${taken.joinToString("\n") { "${it.name}（${it.gender}，${it.age}）→ ${it.doubaoVoice}" }.ifEmpty { "无" }}$narrator
 
 新角色：
 ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceDesc.ifEmpty { "无描述" }}｜已说 ${it.lines} 句" }}
@@ -404,11 +416,12 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
                 }
             }.onFailure { lastError = it.message }
             lock(bookId).withLock {
+                val narrator = if (narratesWithDoubao()) narratorDoubao(bookId) else null
                 val members = castFlow(bookId).value.members.toMutableList()
                 for (i in members.indices) {
                     val m = members[i]
                     if (m.mergedInto != null || m.doubaoVoice.isNotEmpty() || m.doubaoUser) continue
-                    val v = picks[m.name]?.takeIf { DoubaoVoices.acceptable(it, m.gender) } ?: DoubaoVoices.assign(m.gender, m.age, members)
+                    val v = picks[m.name]?.takeIf { DoubaoVoices.acceptable(it, m.gender) && it != narrator } ?: DoubaoVoices.assign(m.gender, m.age, members, narrator)
                     members[i] = m.copy(doubaoVoice = v)
                 }
                 saveCast(bookId, castFlow(bookId).value.copy(members = members))
@@ -439,7 +452,19 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
         try {
             return try { analysePart(bookId, ch, body, part, quotes, withContext) }
             catch (e: ContentBlocked) { throw e }
-            catch (e: Exception) { analysePart(bookId, ch, body, part, quotes, withContext) }   // one retry for other errors
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                try { analysePart(bookId, ch, body, part, quotes, withContext) }   // one retry for other errors
+                catch (e2: ContentBlocked) { throw e2 }
+                catch (e2: CancellationException) { throw e2 }
+                catch (e2: Exception) {
+                    // 千问 itself is failing (model retired, quota, outage): Grok takes the part if it can be reached
+                    if (grokMain() || !app.settings.tts.value.grokRescue || !grokUsable()) throw e2
+                    try { analysePart(bookId, ch, body, part, quotes, withContext, forceGrok = true).also { grokFallback.incrementAndGet(); grokFallbackReason = e2.message } }
+                    catch (e3: CancellationException) { throw e3 }
+                    catch (_: Exception) { throw e2 }
+                }
+            }
         } catch (e: ContentBlocked) {
             blockedParts.incrementAndGet()
             // Grok does not apply the Aliyun filter: hand it the whole part if it can be reached
@@ -469,6 +494,12 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
     /** Parts the content filter refused / that Grok then analysed (for tests / diagnostics). */
     val blockedParts = java.util.concurrent.atomic.AtomicInteger(0)
     val grokRescued = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Parts Grok analysed because 千问 kept failing for reasons other than the content filter. */
+    val grokFallback = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Why 千问 failed the last time Grok stepped in; shown to the listener once. */
+    @Volatile var grokFallbackReason: String? = null
 
     private val speechVerbs = Regex("(道|说|问|喊|叫|笑|叹|喝|吼|骂|答|应|嚷|嘀咕|开口|低语|冷哼|怒斥)")
 
@@ -521,12 +552,13 @@ $registry
 - 留意回话里的称呼：下一句怎么称呼对方（如"小丫头""老夫""哥"），能反推出上一句是谁说的；性别、辈分要对得上。
 - 引号里如果不是有人说出口的话，speaker 填"旁白"：强调词或外号（所谓的"天才"）、牌匾招牌、书名、俗语名言、转述或回忆里提到的字句（他想起"活下去"三个字）。
 - 角色的心里话（心道、暗想）算该角色的对白。
-- 无名人物（下人、围观者、众人）填"路人"。
+- 没有名字但身份明确、说话不止一两句的配角（卖花的女孩、店小二、老妇人），用身份当名字（如"卖花女孩"），作为角色列进 characters 并标出性别、年龄。
+- 其余无名人物（围观者、众人、一闪而过的下人）：男性或不确定填"路人"，女性填"路人女"。
 
 输出 JSON：
 1. characters：本段所有说过话的有名角色（含角色表里已有的，必须沿用标准名）。gender 男/女；age 儿童/少年/青年/中年/老年；aliases 为本段里对他的其他称呼；voice 用一句话描述适合他的嗓音和说话气质（年龄、嗓音、性格），如"四十多岁，嗓音低沉浑厚，说话沉稳威严"。
-2. lines：每个编号一项，写成数组 [编号, "引号内前4个字", "说话人", "语气"]。说话人必须是标准名、"路人"或"旁白"；语气是给配音的指令，8~20 字，只写声音上听得出来的：情绪和强度、音量、语速、气息（如"压着怒火咬牙低吼""带哭腔急切委屈""慢悠悠阴阳怪气地冷笑"），结合上下文把情绪写足。
-只输出 JSON：{"characters":[{"name":"","aliases":[],"gender":"","age":"","voice":""}],"lines":[[0,"","",""]]}
+2. lines：每个编号一项，写成数组 [编号, "引号内前4个字", "说话人", "语气", 强度]。说话人必须是标准名、"路人"、"路人女"或"旁白"；语气是给配音的指令，8~20 字，只写声音上听得出来的：情绪和强度、音量、语速、气息（如"压着怒火咬牙低吼""带哭腔急切委屈""慢悠悠阴阳怪气地冷笑"），结合上下文判断情绪；强度是整数 0~3：0 平常说话（寒暄、交代事情，语气可留空），1 带点情绪，2 情绪明显，3 情绪强烈（怒吼、痛哭、狂喜）。多数日常对白是 0 或 1，不要每句都拔高。
+只输出 JSON：{"characters":[{"name":"","aliases":[],"gender":"","age":"","voice":""}],"lines":[[0,"","","",0]]}
 
 ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\n【正文】\n" else ""}$sb"""
 
@@ -540,7 +572,7 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
             (root["characters"] ?: root["new_characters"])?.jsonArray?.forEach { e ->
                 val o = e.jsonObject
                 val name = o["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-                if (name.isEmpty() || name == Roles.NARRATOR || name == Roles.PASSERBY) return@forEach
+                if (name.isEmpty() || name == Roles.NARRATOR || Roles.isPasserby(name)) return@forEach
                 val aliases = o["aliases"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull?.trim() }?.filter { it.isNotEmpty() && it != name }.orEmpty()
                 val existing = members.indexOfFirst { it.name == name || name in it.aliases }
                 val desc = o["voice"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().take(60)
@@ -590,11 +622,12 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
                     ?: members.filter { sp in it.aliases }.singleOrNull()
                 sp = when {
                     sp == Roles.NARRATOR -> Roles.NARRATOR
+                    sp == Roles.PASSERBY_F -> Roles.PASSERBY_F
                     known != null -> known.name
                     else -> Roles.PASSERBY
                 }
                 if (known != null) counts[known.name] = (counts[known.name] ?: 0) + 1
-                out.add(RoleLine(r.first, r.last + 1, sp, field(3, "emotion").orEmpty().trim().take(40)))
+                out.add(RoleLine(r.first, r.last + 1, sp, field(3, "emotion").orEmpty().trim().take(40), field(4, "intensity")?.trim()?.toIntOrNull()?.coerceIn(0, 3) ?: -1))
             }
             members = members.map { m -> counts[m.name]?.let { m.copy(lines = m.lines + it) } ?: m }.toMutableList()
             saveCast(bookId, castFlow(bookId).value.copy(members = members))
@@ -615,6 +648,9 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
 
     /** Test hook: pretend Grok cannot be reached. */
     internal var simulateGrokDown = false
+
+    /** Test hook: pretend every 千问 analysis call fails (as when the model is retired). */
+    internal var simulateQwenDown = false
 
     @Volatile private var grokDownUntil = 0L
 
@@ -644,10 +680,11 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
 
     private suspend fun callModel(prompt: String, grok: Boolean): String = withContext(Dispatchers.IO) {
         if (grok && simulateGrokDown) throw GrokUnreachable("simulated")
+        if (!grok && simulateQwenDown) throw TtsException("角色分析失败：Model not exist.（模拟）")
         if (!grok) simulateBlock?.let { if (prompt.contains(it)) throw ContentBlocked("Input data may contain inappropriate content.") }
         val key = if (grok) app.keys.grokKey else app.keys.cosyKey
         if (key.isBlank()) throw TtsException(if (grok) "未填写 Grok API Key" else "多角色需要阿里云 API Key（与 CosyVoice 共用）")
-        val qwenModel = app.settings.tts.value.directorModel.let { if (it == GROK_MODEL) "qwen3-max" else it }
+        val qwenModel = app.settings.tts.value.directorModel.let { if (it == GROK_MODEL) "qwen3.8-max" else it }
         val body = buildJsonObject {
             put("model", if (grok) GROK_MODEL else qwenModel)
             putJsonArray("messages") { addJsonObject { put("role", "user"); put("content", prompt) } }

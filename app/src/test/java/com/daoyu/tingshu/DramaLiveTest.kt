@@ -39,6 +39,7 @@ class DramaLiveTest {
         app.tts.freeVoicesForTest = System.getenv("FREE_VOICES") != null
         app.keys.grokKey = System.getenv("GROK_KEY").orEmpty()
         app.director.simulateGrokDown = System.getenv("SIM_GROK_DOWN") != null
+        app.director.simulateQwenDown = System.getenv("SIM_QWEN_DOWN") != null
         app.director.simulateBlock = System.getenv("SIMULATE_BLOCK_B64")?.let { String(java.util.Base64.getDecoder().decode(it), Charsets.UTF_8) }
         System.getenv("DUMP_REPLY")?.let { path -> var n = 0; app.director.onReply = { p, r -> File(path).apply { mkdirs() }.resolve("part${n++}.txt").writeText(p + "\n=====\n" + r) } }
         System.getenv("DRAMA_ENGINE")?.let { e -> runBlocking { app.settings.updateTts { it.copy(dramaVoiceEngine = e) } } }
@@ -51,9 +52,11 @@ class DramaLiveTest {
         val book = runBlocking { app.db.books().get(book0.id)!! }
 
         val played = ArrayList<String>()
+        val playedSegs = ArrayList<com.daoyu.tingshu.tts.Seg>()
         val msgs = java.util.Collections.synchronizedList(ArrayList<String>())
         app.tts.onPlay = { seg, f ->
             val copy = File(out, String.format("%03d.%s", played.size + 1, f.extension)); f.copyTo(copy, overwrite = true)
+            playedSegs.add(seg)
             played.add("${copy.absolutePath}\t${seg.chapter}\t${seg.role ?: "旁白"}\t${seg.text.replace('\n', ' ')}")
         }
         val job = kotlinx.coroutines.GlobalScope.launch0 { app.tts.messages.collect { msgs.add(it) } }
@@ -65,12 +68,22 @@ class DramaLiveTest {
         job.cancel()
         println("DRAMA finished in ${(System.currentTimeMillis() - t0) / 1000}s, messages=$msgs, segments=${played.size}")
         File(out, "played.tsv").writeText(played.joinToString("\n"))
+        // A/B: the same lines voiced the 1.3.7 way (every line acted out, no preceding text), into $TTS_OUT/v1
+        if (System.getenv("EMOTION_AB") != null) {
+            val v1 = File(out, "v1").apply { mkdirs() }
+            app.tts.emotionV1ForTest = true
+            playedSegs.forEachIndexed { i, seg ->
+                runBlocking { app.tts.synthesizeDramaForTest(seg) }?.copyTo(File(v1, String.format("%03d.wav", i + 1)), overwrite = true)
+            }
+            app.tts.emotionV1ForTest = false
+            File(out, "segs.tsv").writeText(playedSegs.joinToString("\n") { "${it.role ?: "旁白"}\t${it.intensity}\t${it.emotion}\t${it.text}" })
+        }
         val cast = app.director.cast(book.id).value
         cast.members.forEach { println("CAST ${it.name} ${it.gender}/${it.age} voice=${it.voice} lines=${it.lines} aliases=${it.aliases} db=${it.doubaoVoice} desc=${it.voiceDesc}") }
         (0 until book.chapterCount).forEach { ch ->
             app.director.cached(book.id, ch)?.lines?.forEach { l -> println("ROLE ch$ch ${l.speaker}\t${book.let { app.storage.readChapter(it.id, ch).substring(l.start, l.end) }}") }
         }
-        println("BLOCKED parts=${app.director.blockedParts.get()} grokRescued=${app.director.grokRescued.get()} sim=${app.director.simulateBlock}")
+        println("BLOCKED parts=${app.director.blockedParts.get()} grokRescued=${app.director.grokRescued.get()} grokFallback=${app.director.grokFallback.get()} sim=${app.director.simulateBlock}")
         val usage = runBlocking { app.db.usage().observeAllOnce() }
         usage.forEach { println("USAGE ${it.engine} chars=${it.chars} billed=${it.billedChars} tokens=${it.audioTokens} req=${it.requests}") }
 

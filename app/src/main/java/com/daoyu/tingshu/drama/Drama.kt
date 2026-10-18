@@ -24,6 +24,7 @@ data class CastMember(
 data class Cast(
     val members: List<CastMember> = emptyList(),
     val narratorVoice: String? = null,  // Edge voice for narration; null = settings default
+    val narratorDoubao: String? = null, // 豆包 voice for narration; null = settings default
 )
 
 /** A quoted line inside a chapter body: [start, end) covers the quote marks too. */
@@ -31,8 +32,9 @@ data class Cast(
 data class RoleLine(
     val start: Int,
     val end: Int,
-    val speaker: String,                // canonical name, "旁白" or "路人"
+    val speaker: String,                // canonical name, "旁白", "路人" or "路人女"
     val emotion: String = "",
+    val intensity: Int = -1,            // 0 calm … 3 intense; -1 = not analysed (older results)
     val manual: Boolean = false,        // corrected by the user
 )
 
@@ -40,11 +42,14 @@ data class RoleLine(
 data class ChapterRoles(val version: Int = 1, val lines: List<RoleLine> = emptyList())
 
 /** Results older than this are re-analysed (keeping the user's manual corrections). */
-const val ROLES_VERSION = 3
+const val ROLES_VERSION = 5   // 4: unnamed female speakers are "路人女"; 5: emotion intensity
 
 object Roles {
     const val NARRATOR = "旁白"
-    const val PASSERBY = "路人"
+    const val PASSERBY = "路人"         // unnamed speaker, male or unknown
+    const val PASSERBY_F = "路人女"     // unnamed female speaker
+
+    fun isPasserby(s: String?) = s == PASSERBY || s == PASSERBY_F
 }
 
 /** Finds quoted dialogue: “…” 「…」 『…』 and straight "…" pairs, never across a line break. */
