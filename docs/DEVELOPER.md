@@ -168,7 +168,7 @@ start(book, ch, offset)
 1. **找引号**：`QuoteFinder.find` 找出 “” 「」 『』 "" 引号（不跨行）。`isEmbedded` 把句中嵌入的强调词、牌匾、俗语（如 所谓的“天才”）直接判给旁白，不送去分析。
 2. **切段**：`DramaDirector.splitParts` 按段落把一章切成小段，每段最多 30 句对白（`PART_QUOTES`）、3000 字（`PART_CHARS`）。第二段起会带上前文约 400 字，标明"仅供理解，不用标注"。
 3. **并行分析**：每段调一次大模型（`callLlm`，流式 SSE）。
-   - 提示词要求返回 `characters`（标准名、别称、性别、年龄、嗓音描述）和紧凑格式的 `lines`：`[编号, 引号内前4字, 说话人, 语气]`。
+   - 提示词要求返回 `characters`（标准名、别称、性别、年龄、嗓音描述）和 `lines`：`{"id","head","speaker","emotion","intensity"}`。1.3.11 之前用数组 `[编号, 前4字, 说话人, 语气, 强度]`，qwen3.8-max 偶尔整段漏掉说话人一栏（语气错位成说话人，整段变路人）；现在改成带字段名的对象，解析仍兼容数组。一段回复里超过三成的说话人缺失或对不上角色表时重问一次，第二次仍不行，缺的句子按"某某道"、冒号前的名字和对话轮流推断。
    - 规则写在提示词里：先看"某某道"这类提示语；没提示语时按对话双方轮流推断；动作描写里出现的人不一定是说话人；心里话算该角色的；无名人物填"路人"；非对白填"旁白"。
 4. **对齐**：模型返回的编号不一定可靠，所以用"前 4 字"核对。处理了模型多抄到引号外的字、抄错一两个字的情况，见 `matches` / `loose`。没被覆盖到的引号一律判为"路人"（由旁白声音读）。
 5. **合入角色表**：新角色按"标准名 + 别称"合并进 `cast.json`，同时统计每个角色的台词句数。
@@ -185,12 +185,13 @@ start(book, ch, offset)
 
 ### 7.3 模型与审核兜底
 
-- **默认模型 `qwen3-max`**（阿里云百炼，与 CosyVoice 共用 Key）。设置里还可以选 `qwen-flash`（省钱）和 Grok。
+- **默认模型 `qwen3.8-max`**（阿里云百炼，与 CosyVoice 共用 Key；`qwen3-max` 已于 2026-10 前下线，1.3.6 起一次性迁移）。设置里还可以选 `qwen-flash`（省钱）和 Grok。
 - **流式调用**：大章节一次性返回要 2 分钟以上，会撞上 OkHttp 90 秒的读超时，导致整章失败。这就是 1.3.3 之前"章节之间要等几分钟"的根源。改成 SSE 流式之后，只要还在持续收数据就不会超时。
 - **阿里云内容审核误拦**：错误码 `data_inspection_failed`，提示 "Input data may contain inappropriate content"，程序里抛 `ContentBlocked`。普通网文也会触发。处理顺序（`analyseRobust`）：
   1. 如果填了 Grok Key 且开着"改用 Grok"开关，整段交给 Grok（`grok-4.20-0309-non-reasoning`，api.x.ai，需要代理）。
   2. Grok 不可用时，对半拆开重试（不带前文），一直拆到 ≤1 句或 <150 字。
   3. 仍被拦的句子用 `ruleBased` 规则判断：在引号前后 30 字内找已知角色名 + 说话动词。
+- **千问本身出错时**（模型下线、额度用完、连续超时、返回内容坏掉，重试一次仍失败）：同样由 Grok 接手这一段（受同一个开关控制，需代理），并提示一次原因；Grok 也不行时这一章照旧退回旁白朗读。测试用 `SIM_QWEN_DOWN=1` 模拟。
 - **Grok 当主模型时**：如果连不上（`GrokUnreachable`，多半是没开代理），10 分钟内改用千问 Max，并提示一次。
 - **测试钩子**：`onAnalysed`、`onReply`（导出原始提示词和回复）、`simulateBlock`（模拟审核拦截）、`simulateGrokDown`。
 
@@ -210,7 +211,7 @@ start(book, ch, offset)
 | 通义千问 Qwen3-TTS | 单人；多角色备选 | `…/aigc/multimodal-generation/generation`；带指令时用 `qwen3-tts-instruct-flash`，不带用 `qwen3-tts-flash`，设计音色用 `qwen3-tts-vd-2026-01-26` | 0.8 元/万计费字符（约 1.5 元/万字） | 音色性别不能按名字猜：Elias"墨讲师"其实是女声。方言音色不支持指令 |
 | 千问声音设计 | 多角色定制音色 | `…/audio/tts/customization`，model `qwen-voice-design` | 0.2 元/个 | 描述里写"少年音"的男声有些句子会听着像女声，所以男声固定"中低音"，并用试听片段测音高（男声 > 175 Hz 就重新设计）。设计出的音色**不接受**逐句指令 |
 | Google Gemini TTS | 单人（精品书） | Interactions API（`/v1beta/interactions`），风格放在 `speech_metadata.style`；2.x/3.1 模型走 generateContent | 3.8 Flash TTS 每百万音频 token 9 美元（约 3.8 元/万字），2027 年起翻倍 | **把风格写进正文会被念出来**，必须走 speech_metadata。Tier 1 和 Tier 2 实际都限 100 次/天。国内需要代理 |
-| 豆包语音合成 2.0 | 多角色对白（默认） | `https://openspeech.bytedance.com/api/v3/tts/unidirectional`，请求头 `X-Api-Key` + `X-Api-Resource-Id: seed-tts-2.0`；返回逐行 JSON，里面是 base64 MP3 | 资源包约 2.8 元/万字 | 音色 ID 规律：`zh_{male\|female}_{拼音}_uranus_bigtts` 和 `ICL_uranus_zh_{male\|female}_{拼音}_tob`。语气指令放在 `additions.context_texts[0]`（不计费），**效果有限**，情绪主要由台词本身决定。`audio_params.emotion` 实测无效。写进正文的 `[#指令]` 会被念出来 |
+| 豆包语音合成 2.0 | 多角色对白（默认） | `https://openspeech.bytedance.com/api/v3/tts/unidirectional`，请求头 `X-Api-Key` + `X-Api-Resource-Id: seed-tts-2.0`；请求 `format: pcm`，返回逐行 JSON，里面是 base64 PCM，存成 WAV 前用 `Loudness.normalize` 拉到 -20 dBFS（同一句每次合成音量差 3～7 dB、音高差可达 30%，属服务端随机波动）。`context_texts` 里放别的角色台词会让声音向那句台词偏移，所以旁白不带上文、对白只带前面的旁白 | 资源包约 2.8 元/万字 | 音色 ID 规律：`zh_{male\|female}_{拼音}_uranus_bigtts` 和 `ICL_uranus_zh_{male\|female}_{拼音}_tob`。语气指令放在 `additions.context_texts[0]`（不计费），**效果有限**，情绪主要由台词本身决定。`audio_params.emotion` 实测无效。写进正文的 `[#指令]` 会被念出来 |
 | 阿里百炼大模型 | 角色分析 | OpenAI 兼容 `/compatible-mode/v1/chat/completions`，`response_format=json_object`，`enable_thinking=false`，`stream=true` | Max 2.5/10、Plus 0.8/2、Flash 0.15/1.5（元/百万 token，输入/输出） | 平台级输入审核会误拦，见 §7.3 |
 | xAI Grok | 角色分析（可选、兜底） | `https://api.x.ai/v1/chat/completions` | 1.25/2.5 美元/百万 token | 国内需要代理；连不上时快速失败并降级 |
 | 系统 TTS | 最后兜底 | Android TextToSpeech | 免费 | 部分 ColorOS 机型没装中文引擎 |
@@ -237,9 +238,10 @@ COSY_KEY  GEMINI_KEY  VOLC_KEY  GROK_KEY     各家 API Key（只放环境变量
 DRAMA_RES=drama_trap.txt                     DramaLiveTest 用哪本测试书（默认 drama_book.txt）
 TTS_OUT=/path                                把实际播放的每段音频和 played.tsv 拷出来
 FREE_VOICES=1                                对白也用 Edge（不花豆包和千问的钱）
-DIRECTOR_MODEL=qwen3-max|qwen-flash|grok-…   临时指定分析模型
+DIRECTOR_MODEL=qwen3.8-max|qwen-plus|qwen-flash|grok-…   临时指定分析模型
 SIMULATE_BLOCK_B64=<base64(触发文本)>         模拟阿里云审核拦截（用 base64 是因为环境变量里的中文会被弄乱）
 SIM_GROK_DOWN=1                              模拟 Grok 连不上
+SIM_QWEN_DOWN=1                              模拟千问分析全部失败（检验 Grok 接手）
 DUMP_REPLY=/path                             导出每段的提示词和模型回复
 ```
 

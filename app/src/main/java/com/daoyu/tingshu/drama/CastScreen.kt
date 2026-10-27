@@ -114,11 +114,12 @@ fun CastScreen(bookId: Long, onBack: () -> Unit) {
         LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(16.dp, 4.dp, 16.dp, 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             // narrator
             item {
-                Card("旁白（免费 · 微软 Edge）") {
-                    val cur = cast.narratorVoice ?: settings.dramaNarratorVoice
+                val doubao = app.director.narratesWithDoubao()
+                Card(if (doubao) "旁白（豆包 2.0）" else "旁白（免费 · 微软 Edge）") {
+                    val cur = if (doubao) cast.narratorDoubao ?: settings.dramaNarratorDoubao else cast.narratorVoice ?: settings.dramaNarratorVoice
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Engines.edgeVoices.take(6).forEach { v ->
-                            FilterChip(selected = v.id == cur, onClick = { scope.launch { app.director.setNarrator(bookId, v.id); app.tts.onSettingsChanged() } },
+                        (if (doubao) DoubaoVoices.narrators else Engines.edgeVoices.take(6)).forEach { v ->
+                            FilterChip(selected = v.id == cur, onClick = { scope.launch { if (doubao) app.director.setNarratorDoubao(bookId, v.id) else app.director.setNarrator(bookId, v.id); app.tts.onSettingsChanged() } },
                                 label = { Text("${v.name} ${v.desc.substringBefore(' ')}") },
                                 colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Palette.Gold.copy(alpha = 0.18f), selectedLabelColor = Palette.Gold))
                         }

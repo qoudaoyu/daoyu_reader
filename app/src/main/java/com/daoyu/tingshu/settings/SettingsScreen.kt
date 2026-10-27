@@ -190,18 +190,21 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             Section("Grok（xAI，角色分析备用）") {
                 SecretField("API Key（console.x.ai 获取）", app.keys.grokKey) { app.keys.grokKey = it }
-                SwitchRow("千问审核拦下的段落改用 Grok 分析", tts.grokRescue) { v -> upd { it.copy(grokRescue = v) } }
+                SwitchRow("千问分析失败或被审核拦下时改用 Grok", tts.grokRescue) { v -> upd { it.copy(grokRescue = v) } }
                 Hint("阿里云会对送去分析的文字做内容审核，普通网文偶尔被误拦。Grok 不受这个审核，实测说话人判断同样全部正确、速度更快，但需要开代理，约 24 元 / 百万字（只用于被拦段落时几乎不花钱）。没开代理时自动拆小段重试，最后按\"某某道\"规则判断。")
             }
 
             Section("多角色说书") {
                 Text("旁白用免费的微软 Edge 语音，对白由通义千问按角色配音；谁在说话由通义千问大模型分析（与上面同一个阿里云 Key）。在听书面板里可随时切换单人 / 多角色。", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
+                ChoiceRow("旁白配音", listOf("doubao" to "豆包 2.0", "edge" to "微软 Edge（免费）"), tts.dramaNarratorEngine) { v -> upd { it.copy(dramaNarratorEngine = v) } }
+                Hint("微软 Edge 目前拒绝本 App 访问（403），旁白默认改用豆包，按全文字数计费，约 2.8 元/万字。没填火山引擎 Key 时仍用 Edge。")
                 Text("新书默认旁白", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                VoicePicker(Engines.edgeVoices.take(6), tts.dramaNarratorVoice) { v -> upd { it.copy(dramaNarratorVoice = v) } }
-                ChoiceRow("角色分析模型", listOf("qwen3-max" to "千问 Max（推荐）", "qwen-flash" to "千问 Flash（省钱）", com.daoyu.tingshu.drama.DramaDirector.GROK_MODEL to "Grok（需代理）"), tts.directorModel) { m ->
-                    upd { it.copy(directorModel = m, directorInPrice = when (m) { "qwen3-max" -> 2.5f; "qwen-plus" -> 0.8f; "qwen-flash" -> 0.15f; else -> 9f }, directorOutPrice = when (m) { "qwen3-max" -> 10f; "qwen-plus" -> 2f; "qwen-flash" -> 1.5f; else -> 18f }) }
+                if (tts.dramaNarratorEngine == "doubao") VoicePicker(com.daoyu.tingshu.drama.DoubaoVoices.narrators, tts.dramaNarratorDoubao) { v -> upd { it.copy(dramaNarratorDoubao = v) } }
+                else VoicePicker(Engines.edgeVoices.take(6), tts.dramaNarratorVoice) { v -> upd { it.copy(dramaNarratorVoice = v) } }
+                ChoiceRow("角色分析模型", listOf("qwen3.8-max" to "千问 3.8 Max（推荐）", "qwen-flash" to "千问 Flash（省钱）", com.daoyu.tingshu.drama.DramaDirector.GROK_MODEL to "Grok（需代理）"), tts.directorModel) { m ->
+                    upd { it.copy(directorModel = m, directorInPrice = when (m) { "qwen3.8-max" -> 12f; "qwen-plus" -> 0.8f; "qwen-flash" -> 0.15f; else -> 9f }, directorOutPrice = when (m) { "qwen3.8-max" -> 36f; "qwen-plus" -> 2f; "qwen-flash" -> 1.5f; else -> 18f }) }
                 }
-                Hint("每章切成小段并行分析，听书时提前分析后面三章；结果按章保存，只收一次费。实测 Max 最准、比 Plus 快一倍，约 10 元 / 百万字；Flash 最快、约 1–2 元 / 百万字，但偶尔会认错说话人。")
+                Hint("每章切成小段并行分析，听书时提前分析后面三章；结果按章保存，只收一次费。实测 3.8 Max 在测试书上 41 句只错 1 句，约 30–40 元 / 百万字（价格待在控制台核对）；Flash 最快、约 1–2 元 / 百万字，但偶尔会认错说话人。")
                 ChoiceRow("对白配音", listOf("doubao" to "豆包 2.0（推荐）", "qwen" to "通义千问"), tts.dramaVoiceEngine) { v -> upd { it.copy(dramaVoiceEngine = v) } }
                 if (tts.dramaVoiceEngine == "doubao" && app.keys.volcKey.isBlank()) Hint("还没填写火山引擎 API Key，暂时用通义千问配对白。")
                 SwitchRow("主要角色定制音色（通义千问）", tts.dramaDesignVoices) { v -> upd { it.copy(dramaDesignVoices = v) } }
@@ -315,7 +318,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
             }
 
-            Text("刀鱼听书 1.3.5", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline, modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 12.dp))
+            Text("刀鱼听书 1.3.11", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline, modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 12.dp))
         }
     }
 }

@@ -84,4 +84,29 @@ class DramaSegmentTest {
         val body = com.daoyu.tingshu.tts.DoubaoTts.body("你好", "zh_female_vv_uranus_bigtts", "用开心的语气说")
         assertTrue(body.contains("context_texts") && body.contains("seed") == false)
     }
+
+    @Test
+    fun loudnessEvensOutClips() {
+        fun tone(amp: Double, n: Int = 24000) = ByteArray(n * 2).also { b ->
+            for (i in 0 until n) {
+                // half a second of speech, half a second of pause
+                val v = if (i % 24000 < 12000) (amp * kotlin.math.sin(i * 0.05)).toInt() else 0
+                b[2 * i] = v.toByte(); b[2 * i + 1] = (v shr 8).toByte()
+            }
+        }
+        fun level(b: ByteArray): Double {
+            var e = 0.0; var c = 0
+            for (i in 0 until b.size / 2) {
+                val v = ((b[2 * i].toInt() and 0xff) or (b[2 * i + 1].toInt() shl 8)).toShort().toDouble()
+                if (v != 0.0) { e += v * v; c++ }
+            }
+            return 20 * kotlin.math.log10(kotlin.math.sqrt(e / c) / 32768)
+        }
+        val quiet = com.daoyu.tingshu.tts.Loudness.normalize(tone(1500.0))
+        val loud = com.daoyu.tingshu.tts.Loudness.normalize(tone(9000.0))
+        assertTrue("${level(quiet)} vs ${level(loud)}", kotlin.math.abs(level(quiet) - level(loud)) < 0.5)
+        // a clip with high peaks is only raised as far as it can go without clipping
+        val peaky = com.daoyu.tingshu.tts.Loudness.normalize(tone(30000.0))
+        assertTrue(level(peaky) <= 0.0)
+    }
 }
