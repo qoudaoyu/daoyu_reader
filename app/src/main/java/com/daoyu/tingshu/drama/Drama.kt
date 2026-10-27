@@ -42,7 +42,7 @@ data class RoleLine(
 data class ChapterRoles(val version: Int = 1, val lines: List<RoleLine> = emptyList())
 
 /** Results older than this are re-analysed (keeping the user's manual corrections). */
-const val ROLES_VERSION = 5   // 4: unnamed female speakers are "路人女"; 5: emotion intensity
+const val ROLES_VERSION = 6   // 4: unnamed female speakers are "路人女"; 5: emotion intensity; 6: redo lines garbled into 路人
 
 object Roles {
     const val NARRATOR = "旁白"
