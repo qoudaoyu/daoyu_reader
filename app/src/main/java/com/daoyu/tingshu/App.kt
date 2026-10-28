@@ -8,6 +8,8 @@ import com.daoyu.tingshu.data.BookImporter
 import com.daoyu.tingshu.data.BookStorage
 import com.daoyu.tingshu.data.SecureKeys
 import com.daoyu.tingshu.data.SettingsStore
+import com.daoyu.tingshu.source.SourceDownloads
+import com.daoyu.tingshu.source.SourceRepo
 import com.daoyu.tingshu.tts.TtsController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +24,8 @@ class App : Application() {
     lateinit var settings: SettingsStore; private set
     lateinit var keys: SecureKeys; private set
     lateinit var tts: TtsController; private set
+    val sources by lazy { SourceRepo(this) }
+    val sourceDownloads by lazy { SourceDownloads(appScope, importer, storage) }
     val director by lazy { com.daoyu.tingshu.drama.DramaDirector() }
 
     override fun onCreate() {

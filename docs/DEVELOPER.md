@@ -58,7 +58,7 @@ export ANDROID_HOME=/path/to/android-sdk     # 或者建一个 local.properties 
 ```
 app/src/main/java/com/daoyu/tingshu/
 ├── App.kt                 Application：全局单例（db / storage / importer / settings / keys / tts / director）+ 一次性迁移
-├── MainActivity.kt        导航（shelf / reader/{id} / cast/{id} / transfer / settings）、外部打开文件、音量键
+├── MainActivity.kt        导航（shelf / reader/{id} / cast/{id} / transfer / search / sources / sourceEdit / settings）、外部打开文件、音量键
 ├── data/
 │   ├── Entities.kt        Room 实体：Book / Chapter / Bookmark / TtsUsage
 │   ├── AppDatabase.kt     DAO + 数据库（version 3，含 1→2、2→3 迁移）
@@ -75,6 +75,14 @@ app/src/main/java/com/daoyu/tingshu/
 │   ├── ReaderScreen.kt    阅读页：菜单、目录、长按菜单（从这里听 / 书签 / 改说话人 / 重新合成）
 │   └── ListenPanel.kt     听书面板：模式（单人/多角色）、引擎、音色、语速、定时
 ├── shelf/ShelfScreen.kt   书架
+├── source/                书源搜书（见 §5 末尾）
+│   ├── BookSource.kt      书源数据结构（字段名照搬阅读/Legado）、JSON 导入导出、内置示例（古腾堡）
+│   ├── RuleEngine.kt      规则求值：CSS / Legado 默认语法 / JSONPath / XPath，|| && ## {{}}
+│   ├── SourceClient.kt    请求（搜索地址模板、POST、GBK、请求头）+ 搜索 / 详情 / 目录 / 正文 / 文件下载
+│   ├── SourceDownloads.kt 下载任务（app 作用域，离开页面不中断），完成后交给 BookImporter
+│   ├── SourceRepo.kt      书源存储 filesDir/book_sources.json
+│   ├── SearchScreen.kt    搜书页 + 下载进度
+│   └── SourcesScreen.kt   书源列表、粘贴导入、编辑页（含测试）
 ├── transfer/
 │   ├── TransferServer.kt  NanoHTTPD：GET / ；GET /api/books ；POST /api/upload ；DELETE /api/books/{id} ；GET /api/books/{id}/download
 │   └── TransferScreen.kt  显示局域网地址和二维码
@@ -124,6 +132,11 @@ app/src/main/assets/
 - **偏移约定**：书里所有位置都用"章节号 + 章内正文字符偏移"表示。分页、高亮、书签、听书进度、角色分析结果都基于这个约定，改动时务必保持一致。
 - **设置**：`ReaderSettings` 和 `TtsSettings` 两个 data class，整体序列化成 JSON 存进 DataStore。新增字段只要给默认值就能兼容旧数据。需要一次性迁移旧值时，在 `App.kt` 里加一个 `xxxChecked` 标志，参照 `qwenVoiceChecked` 和 `directorChecked`。
 - **API Key**：`SecureKeys` 用 EncryptedSharedPreferences 保存，字段有 cosy（阿里云，CosyVoice/千问/百炼共用）、gemini、volc（火山引擎）、grok。**Key 绝不写进代码或 APK**，每次出包前都要扫一遍（见 §10）。
+- **书源**：存在 `filesDir/book_sources.json`（Legado 风格的 JSON 数组），不进数据库，所以加字段不需要 Room 迁移，只要给默认值。第一次打开时写入内置示例。
+  - 逐章下载的书：章节直接按目录拆好交给 `BookImporter.importParsed`，不经过 `TxtParser` 的标题识别；同时把合成的 TXT 存成 `source.txt`，WiFi 传书页可以下载。
+  - 文件下载的书：按 Content-Disposition、URL、Content-Type、zip 魔数判断 TXT / EPUB，再走普通的 `importFile`。
+  - 下载在 App 作用域里跑，没有前台服务；逐章下载 4 并发、每章重试 3 次，失败的章节写"（本章下载失败）"。
+  - 不支持 JS 规则（Legado 的 `<js>`、`@js:`），这类书源在列表里标红提示。
 - **音频缓存**：`cacheDir/tts/`，文件名是"引擎 + 音色参数 + 文本"的 SHA-1。超过 400 MB 时按最近使用清理到 300 MB。重听不重复收费，用的就是这个缓存。
 
 ---
@@ -218,6 +231,7 @@ start(book, ch, offset)
 | 测试 | 类型 | 说明 |
 |---|---|---|
 | `ParserTest` | 离线 | TXT 编码识别、分章、标题，EPUB 解析 |
+| `BookSourceTest` | 离线 | 书源规则语法、Legado JSON 导入、古腾堡页面结构；用本地 NanoHTTPD 假站点跑通 GBK 逐章下载和 EPUB 文件下载到入库 |
 | `DramaSegmentTest` | 离线 | 多角色切段、嵌入引号判定、男声提示词、音高估计、豆包音色目录 |
 | `ScreenshotTest` | 离线 | Roborazzi 截图，输出到 `app/build/shots/` |
 | `EdgeLiveTest` | 在线 | Edge 合成，需要网络 |
@@ -282,6 +296,7 @@ DUMP_REPLY=/path                             导出每段的提示词和模型�
 - **审核兜底不精确**：没有 Grok 时，被拦的句子靠规则判断；找不到角色名的（例如只写"他冷笑道"）由旁白读。
 - **豆包语气指令效果有限**：如果想要更强的表演，可以考虑接 MiniMax Speech-2.8（可在百炼开通，同一个阿里云 Key），这个方案还没有做过实测对比。
 - **Edge 接口非官方**：失效时单人模式会降级到系统 TTS，多角色的旁白也会受影响。
+- **书源**：内置的古腾堡规则是按它的页面结构写的，开发环境连不上 gutenberg.org，没有在线实测过；网站改版后要调规则。逐章下载没有前台服务，下载很长的书时退到后台可能被系统杀掉。
 - **计划中的功能**：MOBI/AZW3（无 DRM）、离线语音模型、仿真翻页、上下滚动、笔记导出、阅读统计。
 - **代码层面**：`TtsController` 和 `DramaDirector` 都已有 700 行左右。继续扩展前，建议把"多角色合成"和"分析调度/审核兜底"拆成独立类。
 

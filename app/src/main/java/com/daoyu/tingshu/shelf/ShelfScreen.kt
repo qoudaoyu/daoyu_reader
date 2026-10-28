@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
@@ -90,7 +91,7 @@ import kotlin.math.roundToInt
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ShelfScreen(onOpen: (Long) -> Unit, onTransfer: () -> Unit, onSettings: () -> Unit) {
+fun ShelfScreen(onOpen: (Long) -> Unit, onTransfer: () -> Unit, onSearch: () -> Unit, onSettings: () -> Unit) {
     val app = App.instance
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -128,6 +129,7 @@ fun ShelfScreen(onOpen: (Long) -> Unit, onTransfer: () -> Unit, onSettings: () -
                 Spacer(Modifier.width(10.dp))
                 books?.let { Text("${it.size} 本", color = MaterialTheme.colorScheme.outline, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp)) }
                 Spacer(Modifier.weight(1f))
+                IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "搜书") }
                 IconButton(onClick = onTransfer) { Icon(Icons.Default.Wifi, "WiFi 传书") }
                 IconButton(onClick = { picker.launch(arrayOf("*/*")) }) { Icon(Icons.Default.Add, "导入") }
                 IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "设置") }
@@ -141,7 +143,7 @@ fun ShelfScreen(onOpen: (Long) -> Unit, onTransfer: () -> Unit, onSettings: () -
             val list = books
             when {
                 list == null -> {}
-                list.isEmpty() -> EmptyShelf(onTransfer) { picker.launch(arrayOf("*/*")) }
+                list.isEmpty() -> EmptyShelf(onTransfer, onSearch) { picker.launch(arrayOf("*/*")) }
                 else -> {
                     val recent = list.firstOrNull { it.lastReadAt > 0 }
                     LazyVerticalGrid(
@@ -244,7 +246,7 @@ private fun ContinueCard(b: Book, listening: Boolean, playing: Boolean, onOpen: 
 }
 
 @Composable
-private fun EmptyShelf(onTransfer: () -> Unit, onImport: () -> Unit) {
+private fun EmptyShelf(onTransfer: () -> Unit, onSearch: () -> Unit, onImport: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(40.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Text("书架空空如也", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
@@ -255,6 +257,8 @@ private fun EmptyShelf(onTransfer: () -> Unit, onImport: () -> Unit) {
         }
         Spacer(Modifier.height(10.dp))
         OutlinedButton(onClick = onImport, modifier = Modifier.width(200.dp)) { Text("从手机导入") }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(onClick = onSearch, modifier = Modifier.width(200.dp)) { Text("从书源搜书") }
     }
 }
 

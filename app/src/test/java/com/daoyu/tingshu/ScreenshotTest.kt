@@ -50,7 +50,7 @@ class ScreenshotTest {
 
     @Test fun shelf() {
         importSamples()
-        rule.setContent { DaoyuTheme(dark = false) { ShelfScreen({}, {}, {}) } }
+        rule.setContent { DaoyuTheme(dark = false) { ShelfScreen({}, {}, {}, {}) } }
         shot("1_shelf")
     }
 
@@ -72,6 +72,21 @@ class ScreenshotTest {
         shot("5_reader_night_serif")
         rule.onRoot().performTouchInput { swipeLeft() }
         shot("6_reader_page2")
+    }
+
+    @Test fun bookSources() {
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SearchScreen({}, {}, {}) } }
+        shot("13_search")
+    }
+
+    @Test fun bookSourceList() {
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SourcesScreen({}, {}) } }
+        shot("14_sources")
+    }
+
+    @Test fun bookSourceEdit() {
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SourceEditScreen(com.daoyu.tingshu.source.Sources.builtin[0].bookSourceUrl, {}) } }
+        shot("15_source_edit")
     }
 
     @Test fun settings() {

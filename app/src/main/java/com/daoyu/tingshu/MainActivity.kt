@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
                         ShelfScreen(
                             onOpen = { openReader(nav, it) },
                             onTransfer = { nav.navigate("transfer") },
+                            onSearch = { nav.navigate("search") },
                             onSettings = { nav.navigate("settings") },
                         )
                     }
@@ -79,6 +80,15 @@ class MainActivity : ComponentActivity() {
                         com.daoyu.tingshu.drama.CastScreen(bookId = e.arguments!!.getLong("id"), onBack = { nav.popBackStack() })
                     }
                     composable("transfer") { TransferScreen(onBack = { nav.popBackStack() }) }
+                    composable("search") {
+                        com.daoyu.tingshu.source.SearchScreen(onBack = { nav.popBackStack() }, onSources = { nav.navigate("sources") }, onOpenBook = { openReader(nav, it) })
+                    }
+                    composable("sources") {
+                        com.daoyu.tingshu.source.SourcesScreen(onBack = { nav.popBackStack() }, onEdit = { url -> nav.navigate("sourceEdit?url=" + android.net.Uri.encode(url ?: "")) })
+                    }
+                    composable("sourceEdit?url={url}", arguments = listOf(navArgument("url") { type = NavType.StringType; defaultValue = "" })) { e ->
+                        com.daoyu.tingshu.source.SourceEditScreen(url = e.arguments?.getString("url").orEmpty(), onBack = { nav.popBackStack() })
+                    }
                     composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }) }
                 }
             }
