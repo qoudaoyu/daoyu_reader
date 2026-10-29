@@ -80,8 +80,13 @@ class ScreenshotTest {
     }
 
     @Test fun bookSourceList() {
-        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SourcesScreen({}, {}) } }
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SourcesScreen({}, {}, {}) } }
         shot("14_sources")
+    }
+
+    @Test fun bookSourceAi() {
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SourceAiScreen({}, {}) } }
+        shot("16_source_ai")
     }
 
     @Test fun bookSourceEdit() {

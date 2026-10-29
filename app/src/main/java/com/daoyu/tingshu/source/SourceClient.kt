@@ -176,7 +176,7 @@ class SourceClient(private val http: OkHttpClient = defaultClient) {
         val ctx = p.ctx()
         val list = eng.elements(ctx, r.chapterList).mapNotNull { item ->
             val name = eng.string(item, r.chapterName.ifBlank { "text" })
-            val url = eng.strings(item, r.chapterUrl.ifBlank { "href" }).firstOrNull()?.let { Urls.resolve(p.url, it) }
+            val url = eng.strings(item, r.chapterUrl.ifBlank { "href||a@href" }).firstOrNull()?.let { Urls.resolve(p.url, it) }
             if (name.isBlank() || url.isNullOrBlank()) null else ChapterLink(name, url)
         }
         val next = if (r.nextTocUrl.isBlank()) emptyList() else eng.strings(ctx, r.nextTocUrl).map { Urls.resolve(p.url, it) }.filter { it != p.url }

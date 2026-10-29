@@ -166,7 +166,7 @@ fun SearchScreen(onBack: () -> Unit, onSources: () -> Unit, onOpenBook: (Long) -
                 if (!searched && tasks.isEmpty()) item {
                     Text(
                         "在已启用的书源里搜索并下载书籍，下载后自动加入书架，可直接阅读和听书。\n\n" +
-                            "书源由你自己添加：在「书源」里填写网站地址和搜索、解析规则，也可以粘贴「阅读」(Legado) 格式的书源 JSON。" +
+                            "书源由你自己添加：在「书源」里点「AI 添加书源」，只填网址和一本书名就能自动写好规则；也可以手动填写规则，或粘贴「阅读」(Legado) 格式的书源 JSON。" +
                             "内置的「古腾堡计划」是公版书示例。请只使用你有权下载的正版或公版资源。",
                         fontSize = 13.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

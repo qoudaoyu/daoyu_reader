@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
@@ -65,7 +66,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SourcesScreen(onBack: () -> Unit, onEdit: (String?) -> Unit) {
+fun SourcesScreen(onBack: () -> Unit, onEdit: (String?) -> Unit, onAi: () -> Unit) {
     val app = App.instance
     val context = LocalContext.current
     val sources by app.sources.sources.collectAsState()
@@ -86,6 +87,18 @@ fun SourcesScreen(onBack: () -> Unit, onEdit: (String?) -> Unit) {
         }
     ) { pad ->
         LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            item {
+                Surface(shape = RoundedCornerShape(12.dp), color = Palette.Gold.copy(alpha = 0.14f), modifier = Modifier.fillMaxWidth().clickable(onClick = onAi)) {
+                    Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.AutoAwesome, null, tint = Palette.Gold)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("AI 添加书源", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text("只填网址和一本书名，规则由 AI 写好并测试", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
             items(sources, key = { it.bookSourceUrl }) { s ->
                 Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth().clickable { onEdit(s.bookSourceUrl) }) {
                     Row(Modifier.padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {

@@ -1,6 +1,6 @@
 # 刀鱼听书 · 开发者说明
 
-> 适用版本：1.4.1（versionCode 21）。本文写给接手这个项目的开发者，介绍怎么构建和签名、代码结构、各模块怎么配合、接入的每个云服务有哪些坑，以及做过哪些实测、得出了哪些结论。最终用户看的说明在根目录 `README.md`。
+> 适用版本：1.4.2（versionCode 22）。本文写给接手这个项目的开发者，介绍怎么构建和签名、代码结构、各模块怎么配合、接入的每个云服务有哪些坑，以及做过哪些实测、得出了哪些结论。最终用户看的说明在根目录 `README.md`。
 
 ---
 
@@ -81,6 +81,8 @@ app/src/main/java/com/daoyu/tingshu/
 │   ├── SourceClient.kt    请求（搜索地址模板、POST、GBK、请求头）+ 搜索 / 详情 / 目录 / 正文 / 文件下载
 │   ├── SourceDownloads.kt 下载任务（app 作用域，离开页面不中断），完成后交给 BookImporter
 │   ├── SourceRepo.kt      书源存储 filesDir/book_sources.json
+│   ├── RuleWriter.kt      AI 添加书源：首页找搜索表单 → 精简 HTML 交给千问写规则 → 用 SourceClient 实跑校验，失败原因回传重写（每步 3 次）
+│   ├── SourceAiScreen.kt  AI 添加书源页面
 │   ├── SearchScreen.kt    搜书页 + 下载进度
 │   └── SourcesScreen.kt   书源列表、粘贴导入、编辑页（含测试）
 ├── transfer/
@@ -236,7 +238,7 @@ start(book, ch, offset)
 | 测试 | 类型 | 说明 |
 |---|---|---|
 | `ParserTest` | 离线 | TXT 编码识别、分章、标题，EPUB 解析 |
-| `BookSourceTest` | 离线 | 书源规则语法、Legado JSON 导入、古腾堡页面结构；用本地 NanoHTTPD 假站点跑通 GBK 逐章下载和 EPUB 文件下载到入库 |
+| `BookSourceTest` | 离线 | 书源规则语法、Legado JSON 导入、古腾堡页面结构；用本地 NanoHTTPD 假站点跑通 GBK 逐章下载和 EPUB 文件下载到入库；AI 写规则的流程（假模型）。`ruleWriterLive` 让真千问读假站点写规则，需要 `COSY_KEY` + `RULEGEN_LIVE=1` |
 | `DramaSegmentTest` | 离线 | 多角色切段、嵌入引号判定、男声提示词、音高估计、豆包音色目录 |
 | `ScreenshotTest` | 离线 | Roborazzi 截图，输出到 `app/build/shots/` |
 | `EdgeLiveTest` | 在线 | Edge 合成，需要网络 |

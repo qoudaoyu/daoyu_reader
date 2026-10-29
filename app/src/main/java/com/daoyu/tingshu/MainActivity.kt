@@ -84,7 +84,10 @@ class MainActivity : ComponentActivity() {
                         com.daoyu.tingshu.source.SearchScreen(onBack = { nav.popBackStack() }, onSources = { nav.navigate("sources") }, onOpenBook = { openReader(nav, it) })
                     }
                     composable("sources") {
-                        com.daoyu.tingshu.source.SourcesScreen(onBack = { nav.popBackStack() }, onEdit = { url -> nav.navigate("sourceEdit?url=" + android.net.Uri.encode(url ?: "")) })
+                        com.daoyu.tingshu.source.SourcesScreen(onBack = { nav.popBackStack() }, onEdit = { url -> nav.navigate("sourceEdit?url=" + android.net.Uri.encode(url ?: "")) }, onAi = { nav.navigate("sourceAi") })
+                    }
+                    composable("sourceAi") {
+                        com.daoyu.tingshu.source.SourceAiScreen(onBack = { nav.popBackStack() }, onEdit = { url -> nav.navigate("sourceEdit?url=" + android.net.Uri.encode(url)) { popUpTo("sources") } })
                     }
                     composable("sourceEdit?url={url}", arguments = listOf(navArgument("url") { type = NavType.StringType; defaultValue = "" })) { e ->
                         com.daoyu.tingshu.source.SourceEditScreen(url = e.arguments?.getString("url").orEmpty(), onBack = { nav.popBackStack() })

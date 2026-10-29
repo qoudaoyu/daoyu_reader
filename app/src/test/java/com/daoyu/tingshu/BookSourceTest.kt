@@ -163,6 +163,7 @@ class BookSourceTest {
             fun page(body: String) = newFixedLengthResponse(Response.Status.OK, "text/html", "<html><head><meta charset=\"gbk\"></head><body>$body</body></html>".toByteArray(gbk).inputStream(), -1)
                 .also { it.addHeader("Content-Type", "text/html") }
             return when {
+                s.uri == "/" -> page("""<h1>测试书城</h1><form action="/search" method="get"><input type="text" name="q"><button>搜索</button></form>""")
                 s.uri == "/search" -> page(if (URLDecoder.decode(s.queryParameterString?.substringAfter("q=") ?: "", "GBK") == "夜雨" || q.isNotEmpty())
                     """<div class="r"><a href="/book/9/">夜雨十年</a><em>佚名</em></div>""" else "")
                 s.uri == "/book/9/" -> page("""<h1>夜雨十年</h1><p class="intro">简介<br>第二行</p><dl id="list">""" +
@@ -273,6 +274,54 @@ class BookSourceTest {
         assertEquals("epub", book.format)
         assertEquals("山海经", book.title)
         assertTrue(app.storage.readChapter(book.id, 0).contains("䧿山"))
+    }
+
+    /** AI 添加书源: form found on the home page, a wrong first answer corrected from feedback, then toc and content. */
+    @Test fun ruleWriterBuildsWorkingSource() = runBlocking {
+        val prompts = mutableListOf<String>()
+        var searchTries = 0
+        val fake: suspend (String) -> String = { p ->
+            prompts += p
+            when {
+                p.contains("搜索后的结果页") -> if (searchTries++ == 0) """{"bookList":"div.nothing","name":"a@text","bookUrl":"a@href"}"""
+                    else """{"bookList":"div.r","name":"a@text","author":"em@text","bookUrl":"a@href"}"""
+                p.contains("的详情页") -> """{"type":"text","tocUrl":"","intro":"p.intro@html"}"""
+                p.contains("目录页") -> """{"chapterList":"#list dd a","chapterName":"","chapterUrl":"","nextTocUrl":"a.next@href"}"""
+                p.contains("正文页") -> """```json
+{"content":"#content@html","nextContentUrl":"#next@href","replaceRegex":"##本站网址.*"}
+```"""
+                else -> "{}"
+            }
+        }
+        val steps = mutableListOf<String>()
+        val src = com.daoyu.tingshu.source.RuleWriter(llm = fake, minChapter = 5).write(base, "夜雨") { steps += it }
+        steps.forEach { println("  · $it") }
+        assertEquals("$base/search?q={{key}},{\"charset\":\"gbk\"}", src.searchUrl)
+        assertEquals("div.r", src.ruleSearch.bookList)
+        assertTrue(prompts.any { it.contains("一条结果都没取到") })   // the retry carried the failure back
+        assertTrue(!prompts.first().contains("<script"))
+        // the written source really works end to end
+        val c = SourceClient()
+        val r = c.search(src, "夜雨").single()
+        assertEquals(5, c.toc(src, c.detail(r).tocUrl).size)
+    }
+
+    /** Same, with the real 千问 reading the fake site's pages (costs a few fen; COSY_KEY + RULEGEN_LIVE=1). */
+    @Test fun ruleWriterLive() = runBlocking {
+        val key = System.getenv("COSY_KEY").orEmpty()
+        org.junit.Assume.assumeTrue(key.isNotBlank() && System.getenv("RULEGEN_LIVE") == "1")
+        val steps = mutableListOf<String>()
+        val src = try {
+            com.daoyu.tingshu.source.RuleWriter(llm = com.daoyu.tingshu.source.RuleWriter.qwen(key), minChapter = 5).write(base, "夜雨") { steps += it; println("  · $it") }
+        } catch (e: com.daoyu.tingshu.source.RuleWriter.Failed) {
+            println(Sources.export(listOfNotNull(e.partial))); throw e
+        }
+        println(Sources.export(listOf(src)))
+        val c = SourceClient()
+        val r = c.search(src, "夜雨").single()
+        val toc = c.toc(src, c.detail(r).tocUrl)
+        assertEquals(5, toc.size)
+        assertEquals("这是第2章的正文。\n他说：“你好。”", c.content(src, toc[1].url, toc[2].url))
     }
 
     @Test fun badRulesFailClearly() = runBlocking {
