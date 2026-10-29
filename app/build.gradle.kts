@@ -21,7 +21,7 @@ android {
         applicationId = "com.daoyu.tingshu"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
+        versionCode = 20
         versionName = "1.4.0"
     }
 

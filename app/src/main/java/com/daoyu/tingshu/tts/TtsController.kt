@@ -12,8 +12,9 @@ import com.daoyu.tingshu.data.Book
 import com.daoyu.tingshu.data.Chapter
 import com.daoyu.tingshu.data.TtsSettings
 import com.daoyu.tingshu.data.TtsUsage
-import com.daoyu.tingshu.drama.VoicePools
 import com.daoyu.tingshu.drama.DoubaoVoices
+import com.daoyu.tingshu.drama.Roles
+import com.daoyu.tingshu.drama.VoicePools
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -234,8 +235,10 @@ class TtsController(private val context: Context) {
                 _state.update { it.copy(status = "") }
                 if (roles == null) notifyOnce("drama$ch", "本章角色分析失败（${director.lastError ?: "网络错误"}），本章用旁白朗读")
             }
+            director.grokFallbackReason?.let { notifyOnce("grokFallback", "千问角色分析出错（$it），已改用 Grok 分析") }
+            if (director.castBroken(b.id)) notifyOnce("castBroken", "本书角色表文件损坏，已另存为 cast.json.broken，角色会重新分配音色，可在角色表里调整")
             // characters met before 豆包 was switched on still need a voice
-            if (director.usesDoubao()) director.ensureDoubaoVoices(b.id)
+            if (director.usesDoubao()) runCatching { director.ensureDoubaoVoices(b.id) }
             withContext(Dispatchers.Default) { Segmenter.splitDrama(ch, body, offset, roles?.lines.orEmpty(), 200) }
         } else withContext(Dispatchers.Default) { Segmenter.split(ch, body, offset, maxLenFor(sessionEngine)) }
         // an empty chapter still needs a placeholder so we move on to the next one
@@ -313,7 +316,7 @@ class TtsController(private val context: Context) {
                 val file = d.await()
                 _state.update { it.copy(loading = false) }
                 if (file == null) {
-                    _messages.tryEmit("所有语音引擎都不可用，已暂停")
+                    _messages.tryEmit(failures.remove(seg) ?: "所有语音引擎都不可用，已暂停")
                     pause()
                     // wait until the user resumes, then retry from this segment
                     while (paused && isActive) delay(300)
@@ -321,7 +324,18 @@ class TtsController(private val context: Context) {
                     return@launch
                 }
                 onPlay?.invoke(seg, file)
-                playFile(file)
+                if (!playFile(file)) {
+                    // the file could not be played (and was deleted): make it again once rather than skip the sentence
+                    val again = if (seg.drama) synthesizeDrama(seg) else synthesizeWithFallback(seg)
+                    if (again != null) onPlay?.invoke(seg, again)
+                    if (again == null || !playFile(again)) {
+                        _messages.tryEmit(failures.remove(seg) ?: "这一句播放失败，已暂停，点播放重试")
+                        pause()
+                        while (paused && isActive) delay(300)
+                        jump(playIndex)
+                        return@launch
+                    }
+                }
                 val nextSeg = queue.getOrNull(playIndex + 1)
                 if (_state.value.sleepChoice == -1 && (nextSeg == null || nextSeg.chapter != seg.chapter)) {
                     playIndex++
@@ -417,8 +431,13 @@ class TtsController(private val context: Context) {
         return File(cacheDir, md.joinToString("") { "%02x".format(it) } + "." + ext)
     }
 
-    /** Voices for one multi-role segment: 豆包 or Qwen for a character, Edge for narration and as last resort. */
+    /**
+     * Voices for one multi-role segment. [doubaoVoice] is non-null when 豆包 voices the characters; it is ""
+     * while the character has no saved voice yet; for narration it is the narrator's 豆包 voice, if 豆包 narrates.
+     * Otherwise narration and characters without a Qwen voice use Edge.
+     */
     private data class DramaVoice(
+        val role: String?,                  // canonical character name; null = narrator / passer-by
         val doubaoVoice: String?, val doubaoInstruct: String,
         val qwenVoice: String?, val instruct: String,
         val edgeVoice: String,
@@ -429,104 +448,144 @@ class TtsController(private val context: Context) {
         val b = book!!
         val narrator = director.cast(b.id).value.narratorVoice ?: s.dramaNarratorVoice
         val m = seg.role?.let { director.resolve(b.id, it) }
-        if (m == null) return DramaVoice(null, "", null, "", narrator)
+        if (m == null && Roles.isPasserby(seg.role)) {
+            // unnamed speakers get an ordinary voice of their gender, not the narrator's storytelling one
+            val female = seg.role == Roles.PASSERBY_F
+            val edge = if (female) "zh-CN-XiaoyiNeural" else "zh-CN-YunjianNeural"
+            val db = if (director.usesDoubao() && !freeVoicesForTest) (if (female) DoubaoVoices.PASSERBY_F else DoubaoVoices.PASSERBY_M) else null
+            return DramaVoice(seg.role, db, doubaoInstruction(seg), null, "", edge)
+        }
+        if (m == null) {
+            val db = if (director.narratesWithDoubao() && !freeVoicesForTest) director.narratorDoubao(b.id) else null
+            // no preceding text for narration: with a character's line as context 豆包 reads it higher and brighter,
+            // so the narrator seemed to change voice from paragraph to paragraph (1.3.8)
+            return DramaVoice(null, db, if (db != null) NARRATION else "", null, "", narrator)
+        }
         val fallback = if (m.gender.startsWith("女")) "zh-CN-XiaoyiNeural" else "zh-CN-YunjianNeural"
-        if (freeVoicesForTest) return DramaVoice(null, "", null, "", fallback)
+        if (freeVoicesForTest) return DramaVoice(m.name, null, "", null, "", fallback)
         // 豆包: the voice already carries age and temperament; the line's mood goes in as an unbilled instruction
-        val db = if (director.usesDoubao() && !doubaoBroken) m.doubaoVoice.ifEmpty { DoubaoVoices.assign(m.gender, m.age, director.cast(b.id).value.members) } else null
-        val dbInstruct = doubaoInstruction(seg.emotion)
-        if (m.voice.isEmpty()) return DramaVoice(db, dbInstruct, null, "", fallback)
+        if (director.usesDoubao()) return DramaVoice(m.name, m.doubaoVoice, doubaoInstruction(seg), null, "", fallback)
+        if (m.voice.isEmpty()) return DramaVoice(m.name, null, "", null, "", fallback)
         // a designed Qwen voice already sounds like the character and ignores instructions
-        if (VoicePools.isDesigned(m.voice)) return DramaVoice(db, dbInstruct, m.voice, "", fallback)
+        if (VoicePools.isDesigned(m.voice)) return DramaVoice(m.name, null, "", m.voice, "", fallback)
         val persona = VoicePools.persona(m)
-        return DramaVoice(db, dbInstruct, m.voice, if (seg.emotion.isBlank()) persona else "$persona；${seg.emotion}", fallback)
+        return DramaVoice(m.name, null, "", m.voice, if (seg.emotion.isBlank()) persona else "$persona；${seg.emotion}", fallback)
     }
 
     /** 豆包 follows a vivid, voice-only direction best; older analyses only have a short mood word. */
-    private fun doubaoInstruction(emotion: String): String {
-        val e = emotion.trim().trimEnd('。')
-        if (e.isEmpty()) return ""
-        val tone = if (e.startsWith("用") && e.endsWith("说")) e else "用${e}的语气说"
-        return "像影视剧演员一样把情绪演足，$tone"
+    private fun doubaoInstruction(seg: Seg): String {
+        val e = seg.emotion.trim().trimEnd('。')
+        if (emotionV1ForTest) return if (e.isEmpty()) "" else "像影视剧演员一样把情绪演足，" + (if (e.startsWith("用") && e.endsWith("说")) e else "用${e}的语气说")
+        val tone = when {
+            e.isEmpty() || seg.intensity == 0 -> ""        // everyday lines: no acting direction, 豆包 reads them naturally
+            e.startsWith("用") && e.endsWith("说") -> e
+            else -> "用${e}的语气说"
+        }
+        // only clearly emotional lines (or older analyses without an intensity) are pushed to act it out fully
+        val inst = if (tone.isNotEmpty() && (seg.intensity >= 2 || seg.intensity < 0)) "像影视剧演员一样把情绪演足，$tone" else tone
+        return withContext(seg, inst)
     }
+
+    /**
+     * Adds the narration just before [seg] as reference for 豆包 (context_texts is not read aloud or billed),
+     * so a line is voiced knowing what just happened. Up to ~80 characters of the same chapter. Other speakers'
+     * lines are left out: 豆包 drifts towards the voice of whatever line it is given.
+     */
+    private fun withContext(seg: Seg, instruction: String): String {
+        if (emotionV1ForTest) return instruction
+        val before = runCatching {
+            val q = queue.toList()   // a concurrent rebuild only costs this line its context
+            val i = q.indexOf(seg)
+            if (i <= 0) "" else q.subList(maxOf(0, i - 3), i).filter { it.chapter == seg.chapter && it.role == null }.joinToString("") { it.text }.takeLast(80)
+        }.getOrDefault("")
+        if (before.isBlank()) return instruction
+        return "上文（只作参考，不要读出来）：$before\n" + instruction.ifEmpty { "自然地接着说" }
+    }
+
+    /** A/B tests: the 1.3.7 behaviour (every line "演足", no preceding text). */
+    internal var emotionV1ForTest = false
+
+    internal suspend fun synthesizeDramaForTest(seg: Seg): File? = synthesizeDrama(seg)
+
+    /** Narration keeps an even storyteller tone; the line's own mood belongs to the characters. */
+    private val NARRATION = "用说书人的口吻，从容平稳地叙述"
 
     /** Tests that only measure pacing use free Edge voices for dialogue too. */
     internal var freeVoicesForTest = false
 
-    /** Set when 豆包 rejected the key or ran out of quota; dialogue then uses Qwen until the next session. */
-    @Volatile private var doubaoBroken = false
+    /** Why a segment could not be voiced; shown when playback stops at it. */
+    private val failures = java.util.concurrent.ConcurrentHashMap<Seg, String>()
 
     private fun cacheFilesFor(seg: Seg): List<File> {
         if (!seg.drama) return Engines.all.map { cacheFile(engineOf(it), settings(), seg.text) }
         val v = dramaVoiceOf(seg)
         return listOfNotNull(
-            v.doubaoVoice?.let { hashName("db|$it|${v.doubaoInstruct}|${seg.text}", "mp3") },
+            v.doubaoVoice?.takeIf { it.isNotEmpty() }?.let { hashName("db|$it|${v.doubaoInstruct}|${seg.text}", "wav") },
             v.qwenVoice?.let { hashName("dq|$it|${v.instruct}|${seg.text}", "wav") },
             hashName("de|${v.edgeVoice}|${settings().edgeRate}|${seg.text}", "mp3"),
         )
     }
 
-    /** Multi-role: character lines with 豆包 (or Qwen) voices, narration (and fallbacks) with free Edge voices. */
+    /**
+     * Multi-role: each character speaks with its saved 豆包 (or Qwen) voice, narration with 豆包 or Edge.
+     * A voice that fails is never swapped for another engine or voice behind the listener's back: the
+     * segment fails, playback pauses there, and the listener retries or picks another voice in the cast.
+     */
     private suspend fun synthesizeDrama(seg: Seg): File? {
         val s = settings()
-        val v = dramaVoiceOf(seg)
-        if (v.doubaoVoice != null && !overLimit(Engines.DOUBAO, s)) {
-            val out = hashName("db|${v.doubaoVoice}|${v.doubaoInstruct}|${seg.text}", "mp3")
-            if (out.exists() && out.length() > 0) { out.setLastModified(System.currentTimeMillis()); return out }
-            var attempt = 0
-            while (true) {
-                try {
-                    val tmp = File(out.path + ".part")
-                    val info = DoubaoTts.synthesize(seg.text, v.doubaoVoice, v.doubaoInstruct, tmp)
-                    tmp.renameTo(out)
-                    recordUsage(Engines.DOUBAO, seg.text, info)
-                    return out
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    if (e is TtsException && e.skipEngine) doubaoBroken = true
-                    else if (attempt++ < 2) { delay(800L * attempt); continue }
-                    notifyOnce("dramaDoubao", "豆包配音出错（${e.message}），暂用通义千问代替")
-                    break
-                }
+        var v = dramaVoiceOf(seg)
+        val who = v.role?.let { "「$it」的配音" } ?: "旁白"
+        val fix = if (v.role != null) "点播放重试，或到角色表换一个音色" else "点播放重试"
+        if (v.doubaoVoice != null) {
+            if (v.role != null && v.doubaoVoice.isNullOrEmpty()) {
+                // first line of a new character: choose and save its voice before anything is played with it
+                runCatching { director.ensureDoubaoVoices(book!!.id) }
+                v = dramaVoiceOf(seg)
             }
+            val voice = v.doubaoVoice
+            if (voice.isNullOrEmpty()) return fail(seg, "${who}还没能分配音色（${director.lastError ?: "角色表保存失败"}），已暂停，$fix")
+            if (overLimit(Engines.DOUBAO, s)) return fail(seg, "豆包语音已达本月用量上限，已暂停。可在设置里调高上限")
+            val instruct = v.doubaoInstruct
+            val out = hashName("db|$voice|$instruct|${seg.text}", "wav")
+            val err = synthInto(out, Engines.DOUBAO, seg.text) { DoubaoTts.synthesize(seg.text, voice, instruct, it) }
+            return if (err == null) out else fail(seg, "${who}暂时不可用：$err。已暂停，$fix")
         }
-        if (v.qwenVoice != null && !overLimit(Engines.QWEN, s)) {
-            val out = hashName("dq|${v.qwenVoice}|${v.instruct}|${seg.text}", "wav")
-            if (out.exists() && out.length() > 0) { out.setLastModified(System.currentTimeMillis()); return out }
-            var attempt = 0
-            while (true) {
-                try {
-                    val tmp = File(out.path + ".part")
-                    val info = QwenTts.synthesizeWith(seg.text, v.qwenVoice, v.instruct, tmp)
-                    tmp.renameTo(out)
-                    recordUsage(Engines.QWEN, seg.text, info)
-                    return out
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    if (e !is TtsException || !e.skipEngine) { if (attempt++ < 2) { delay(800L * attempt); continue } }
-                    notifyOnce("dramaQwen", "角色配音出错（${e.message}），暂用免费语音代替")
-                    break
-                }
-            }
+        val qwen = v.qwenVoice
+        if (v.role != null && qwen != null) {
+            if (overLimit(Engines.QWEN, s)) return fail(seg, "通义千问语音已达本月用量上限，已暂停。可在设置里调高上限")
+            val instruct = v.instruct
+            val out = hashName("dq|$qwen|$instruct|${seg.text}", "wav")
+            val err = synthInto(out, Engines.QWEN, seg.text) { QwenTts.synthesizeWith(seg.text, qwen, instruct, it) }
+            return if (err == null) out else fail(seg, "${who}暂时不可用：$err。已暂停，$fix")
         }
-        val out = hashName("de|${v.edgeVoice}|${s.edgeRate}|${seg.text}", "mp3")
-        if (out.exists() && out.length() > 0) { out.setLastModified(System.currentTimeMillis()); return out }
+        val edge = v.edgeVoice
+        val out = hashName("de|$edge|${s.edgeRate}|${seg.text}", "mp3")
+        val err = synthInto(out, null, seg.text) { EdgeTts.synthesize(seg.text, s.copy(edgeVoice = edge), it) }
+        return if (err == null) out else fail(seg, "${who}暂时不可用：$err。已暂停，$fix")
+    }
+
+    private fun fail(seg: Seg, why: String): File? {
+        failures[seg] = why
+        return null
+    }
+
+    /** Synthesizes into [out] unless it is cached, retrying passing errors. Returns null on success, else why it failed. */
+    private suspend fun synthInto(out: File, usageEngine: String?, text: String, call: suspend (File) -> SynthInfo): String? {
+        if (out.exists() && out.length() > 0) { out.setLastModified(System.currentTimeMillis()); return null }
         var attempt = 0
         while (true) {
             try {
                 val tmp = File(out.path + ".part")
-                EdgeTts.synthesize(seg.text, s.copy(edgeVoice = v.edgeVoice), tmp)
-                tmp.renameTo(out)
-                return out
+                val info = call(tmp)
+                if (!tmp.renameTo(out)) return "缓存写入失败"
+                if (usageEngine != null) recordUsage(usageEngine, text, info)
+                return null
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (attempt++ < 2) { delay(800L * attempt); continue }
-                notifyOnce("dramaEdge", "旁白语音出错（${e.message}），改用系统朗读")
-                val sys = cacheFile(systemTts, s, seg.text)
-                return try { systemTts.synthesize(seg.text, s, sys); sys } catch (_: Exception) { null }
+                // a bad key or used-up quota will not fix itself; anything else gets two more tries
+                if (!(e is TtsException && e.skipEngine) && attempt++ < 2) { delay(800L * attempt); continue }
+                return e.message ?: e.javaClass.simpleName
             }
         }
     }
@@ -557,19 +616,23 @@ class TtsController(private val context: Context) {
 
     // ---------------------------------------------------------------- playback
 
-    private suspend fun playFile(file: File) = suspendCancellableCoroutine { cont ->
+    /** Robolectric's MediaPlayer cannot play real audio; tests that drive the pipeline treat every file as played. */
+    internal var skipPlaybackForTest = false
+
+    /** Plays [file] to the end. Returns false when it could not be played; the broken file is deleted. */
+    private suspend fun playFile(file: File): Boolean = if (skipPlaybackForTest) true else suspendCancellableCoroutine<Boolean> { cont ->
         val p = MediaPlayer()
         try {
             p.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             p.setDataSource(file.absolutePath)
-            p.setOnCompletionListener { if (cont.isActive) cont.resume(Unit) }
-            p.setOnErrorListener { _, _, _ -> file.delete(); if (cont.isActive) cont.resume(Unit); true }
+            p.setOnCompletionListener { if (cont.isActive) cont.resume(true) }
+            p.setOnErrorListener { _, _, _ -> file.delete(); if (cont.isActive) cont.resume(false); true }
             p.prepare()
             mp = p
             if (!paused) p.start()
         } catch (e: Exception) {
             file.delete()
-            if (cont.isActive) cont.resume(Unit)
+            if (cont.isActive) cont.resume(false)
         }
         cont.invokeOnCancellation { scope.launch { if (mp === p) releasePlayer() else p.release() } }
     }.also { releasePlayer() }
@@ -659,7 +722,7 @@ class TtsController(private val context: Context) {
     } catch (e: Exception) { e.message ?: e.javaClass.simpleName }
 
     suspend fun previewDoubao(voice: String, text: String): String? {
-        val out = File(context.cacheDir, "preview_db_${(voice + text).hashCode()}.mp3")
+        val out = File(context.cacheDir, "preview_db_${(voice + text).hashCode()}.wav")
         return try {
             if (!out.exists() || out.length() < 200) DoubaoTts.synthesize(text, voice, "", out)
             previewFile(out)
