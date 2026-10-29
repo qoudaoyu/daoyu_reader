@@ -55,7 +55,54 @@ class Page(val url: String, val bytes: ByteArray, val contentType: String, val c
         else RuleEngine.Ctx.Html(Jsoup.parse(ByteArrayInputStream(bytes), charset, url))
 }
 
+/** One request as the site actually answered it, kept so the source tester can show what came back. */
+data class FetchRecord(
+    val method: String,
+    val url: String,
+    val body: String?,
+    val headers: Map<String, String>,
+    val code: Int,
+    val finalUrl: String,
+    val contentType: String,
+    val size: Int,
+    val title: String,
+    val preview: String,
+    val error: String? = null,
+) {
+    fun describe(): String = buildString {
+        append("$method $url\n")
+        if (!body.isNullOrEmpty()) append("请求体：$body\n")
+        if (headers.isNotEmpty()) append("请求头：" + headers.keys.joinToString("、") + "\n")
+        if (error != null) { append("没有连上：$error\n"); return@buildString }
+        append("状态 $code · ${contentType.ifBlank { "未知类型" }} · ${size} 字节\n")
+        if (finalUrl != url) append("跳转到：$finalUrl\n")
+        if (title.isNotBlank()) append("页面标题：$title\n")
+        append("内容开头：\n${preview.ifBlank { "（空）" }}")
+    }
+
+    companion object {
+        const val PREVIEW = 400
+
+        fun of(spec: SourceClient.UrlSpec, code: Int, page: Page): FetchRecord {
+            val text = runCatching { page.text }.getOrDefault("")
+            val html = !page.isJson && text.trimStart().startsWith("<")
+            val doc = if (html) runCatching { Jsoup.parse(text) }.getOrNull() else null
+            // for HTML the visible text says more than the markup; JSON is shown as is
+            val shown = doc?.body()?.text()?.ifBlank { null } ?: text
+            return FetchRecord(
+                spec.method, spec.url, spec.body, spec.headers, code, page.url, page.contentType, page.bytes.size,
+                doc?.title().orEmpty(), shown.replace(Regex("\\s+"), " ").trim().take(PREVIEW),
+            )
+        }
+    }
+}
+
 class SourceClient(private val http: OkHttpClient = defaultClient) {
+    /** Every request this client made, newest last; the source tester shows them when something fails. */
+    val log = mutableListOf<FetchRecord>()
+    /** The last page fetched, so a failed search can be explained rule by rule. */
+    @Volatile var lastPage: Page? = null
+
 
     /** Parsed `url,{"method":"POST","body":"…","charset":"gbk","headers":{…}}` */
     data class UrlSpec(val url: String, val method: String = "GET", val body: String? = null, val charset: String? = null, val headers: Map<String, String> = emptyMap())
@@ -98,11 +145,20 @@ class SourceClient(private val http: OkHttpClient = defaultClient) {
                 ?: if (body.trimStart().startsWith("{")) "application/json; charset=utf-8" else "application/x-www-form-urlencoded"
             rb.post(if (type.startsWith("application/x-www-form-urlencoded") && body.isEmpty()) FormBody.Builder().build() else body.toRequestBody(type.toMediaTypeOrNull()))
         }
-        http.newCall(rb.build()).execute().use { resp ->
-            if (!resp.isSuccessful) throw SourceException("网站返回 ${resp.code}：${spec.url}")
+        val call = try {
+            http.newCall(rb.build()).execute()
+        } catch (e: java.io.IOException) {
+            synchronized(log) { log += FetchRecord(spec.method, spec.url, spec.body, spec.headers, 0, spec.url, "", 0, "", "", e.message ?: e.javaClass.simpleName) }
+            throw e
+        }
+        call.use { resp ->
             val bytes = resp.body?.bytes() ?: ByteArray(0)
             val ct = resp.header("Content-Type") ?: ""
-            Page(resp.request.url.toString(), bytes, ct, spec.charset ?: resp.body?.contentType()?.charset()?.name())
+            val page = Page(resp.request.url.toString(), bytes, ct, spec.charset ?: resp.body?.contentType()?.charset()?.name())
+            synchronized(log) { log += FetchRecord.of(spec, resp.code, page) }
+            lastPage = page
+            if (!resp.isSuccessful) throw SourceException("网站返回 ${resp.code}：${spec.url}")
+            page
         }
     }
 
@@ -134,6 +190,20 @@ class SourceClient(private val http: OkHttpClient = defaultClient) {
                 coverUrl = eng.strings(item, r.coverUrl).firstOrNull()?.let { Urls.resolve(p.url, it) } ?: "",
             )
         }.distinctBy { it.bookUrl + "|" + it.name }
+    }
+
+    /** Why [parseSearch] found nothing on [p]: which of the list / name rules came up empty. */
+    fun explainSearch(source: BookSource, p: Page): String {
+        val eng = RuleEngine(p.url)
+        val r = source.ruleSearch
+        val ctx = runCatching { p.ctx() }.getOrElse { return "返回内容按${if (p.isJson) " JSON" else "网页"}解析失败：${it.message}" }
+        val kind = if (p.isJson) "JSON" else "网页"
+        if (r.bookList.isBlank()) return "「结果列表」规则是空的"
+        val items = runCatching { eng.elements(ctx, r.bookList) }.getOrElse { return "「结果列表」规则出错：${it.message}" }
+        if (items.isEmpty()) return "返回的是$kind，「结果列表」${r.bookList} 一个都没匹配到"
+        val named = items.count { eng.string(it, r.name).isNotBlank() }
+        return "「结果列表」匹配到 ${items.size} 个，其中 $named 个取到了书名" +
+            if (named == 0) "：「书名」${r.name} 不对" else ""
     }
 
     suspend fun detail(result: SearchResult): BookDetail {

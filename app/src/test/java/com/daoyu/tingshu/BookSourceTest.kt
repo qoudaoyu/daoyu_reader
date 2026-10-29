@@ -159,10 +159,12 @@ class BookSourceTest {
         val gbk = charset("GBK")
         val chapters = (1..5).map { "第${it}章 第${it}回" to "这是第${it}章的正文。\n他说：“你好。”" }
         override fun serve(s: IHTTPSession): Response {
+            if (s.method == Method.POST) s.parseBody(HashMap()) // drain the body so the kept-alive connection stays usable
             val q = s.parms["q"]?.let { it } ?: ""
             fun page(body: String) = newFixedLengthResponse(Response.Status.OK, "text/html", "<html><head><meta charset=\"gbk\"></head><body>$body</body></html>".toByteArray(gbk).inputStream(), -1)
                 .also { it.addHeader("Content-Type", "text/html") }
             return when {
+                s.uri == "/api/search" -> newFixedLengthResponse(Response.Status.OK, "text/html", "<html><head><title>请先登录</title></head><body><p>登录后才能搜索</p><script>var x=1</script></body></html>")
                 s.uri == "/noform" -> page("<h1>没有搜索框的首页</h1>")
                 s.uri == "/" -> page("""<h1>测试书城</h1><form action="/search" method="get"><input type="text" name="q"><button>搜索</button></form>""")
                 s.uri == "/search" -> page(if (URLDecoder.decode(s.queryParameterString?.substringAfter("q=") ?: "", "GBK") == "夜雨" || q.isNotEmpty())
@@ -357,5 +359,36 @@ class BookSourceTest {
         assertEquals(SourceDownloads.Status.FAILED, task.status)
         assertTrue(task.message, task.message.contains("目录"))
         Unit
+    }
+
+    @Test fun diagnosisShowsWhatCameBack() = runBlocking {
+        val c = SourceClient()
+        val src = BookSource(
+            bookSourceUrl = base, bookSourceName = "接口站", bookSourceType = BookSource.TYPE_FILE,
+            header = """{"Cookie":"secret"}""",
+            searchUrl = """/api/search,{"method":"POST","body":"q={{key}}&page={{page}}"}""",
+            ruleSearch = SearchRule(bookList = "$.books[*]", name = "$.title", bookUrl = "$.href"),
+        )
+        assertTrue(c.search(src, "夜雨").isEmpty())
+        val rec = c.log.last()
+        assertEquals("POST", rec.method)
+        assertEquals("q=%E5%A4%9C%E9%9B%A8&page=1", rec.body)
+        assertEquals(200, rec.code)
+        assertEquals("请先登录", rec.title)
+        assertEquals("登录后才能搜索", rec.preview)
+        val text = rec.describe()
+        assertTrue(text, text.contains("请求头：Cookie") && !text.contains("secret"))
+        assertEquals("返回的是网页，「结果列表」$.books[*] 一个都没匹配到", c.explainSearch(src, c.lastPage!!))
+
+        // a 404 is still recorded before the error is thrown
+        val missing = src.copy(searchUrl = "/nowhere?q={{key}}")
+        assertTrue(runCatching { c.search(missing, "x") }.exceptionOrNull() is com.daoyu.tingshu.source.SourceException)
+        assertEquals(404, c.log.last().code)
+        assertEquals("nope", c.log.last().preview)
+
+        val wrongName = BookSource(bookSourceUrl = base, searchUrl = "/f/search?q={{key}}",
+            ruleSearch = SearchRule(bookList = "$.items[*]", name = "$.title"))
+        assertTrue(c.search(wrongName, "山海").isEmpty())
+        assertEquals("「结果列表」匹配到 1 个，其中 0 个取到了书名：「书名」$.title 不对", c.explainSearch(wrongName, c.lastPage!!))
     }
 }

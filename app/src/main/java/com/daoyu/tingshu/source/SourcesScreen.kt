@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -177,18 +178,25 @@ fun SourceEditScreen(url: String, onBack: () -> Unit) {
         scope.launch {
             val c = SourceClient()
             testOut = try {
-                val res = c.search(s.copy(bookSourceUrl = s.bookSourceUrl.trim().trimEnd('/')), testKey.trim())
+                val src = s.copy(bookSourceUrl = s.bookSourceUrl.trim().trimEnd('/'))
+                val res = c.search(src, testKey.trim())
                 buildString {
                     append("搜索到 ${res.size} 条结果\n")
+                    if (res.isEmpty()) {
+                        c.lastPage?.let { append("原因：" + c.explainSearch(src, it) + "\n") }
+                        append(diagnosis(c))
+                    }
                     res.take(5).forEach { append("· ${it.name}  ${it.author}\n   ${it.bookUrl}\n") }
                     res.firstOrNull()?.let { r ->
                         val d = c.detail(r)
                         if (s.isFile) {
                             append("\n第一本的下载链接：${d.downloads.size} 个\n")
                             d.downloads.take(5).forEach { append("   $it\n") }
+                            if (d.downloads.isEmpty()) append(diagnosis(c, last = 1))
                         } else {
                             val toc = c.toc(r.source, d.tocUrl)
                             append("\n第一本的目录：${toc.size} 章\n")
+                            if (toc.isEmpty()) append(diagnosis(c, last = 1))
                             toc.take(3).forEach { append("· ${it.name}\n") }
                             toc.firstOrNull()?.let { ch ->
                                 val text = c.content(r.source, ch.url, toc.getOrNull(1)?.url)
@@ -198,7 +206,7 @@ fun SourceEditScreen(url: String, onBack: () -> Unit) {
                     }
                 }
             } catch (e: Exception) {
-                "出错：${e.message ?: e.javaClass.simpleName}"
+                "出错：${e.message ?: e.javaClass.simpleName}\n" + diagnosis(c)
             }
             testing = false
         }
@@ -271,8 +279,11 @@ fun SourceEditScreen(url: String, onBack: () -> Unit) {
                     Spacer(Modifier.width(8.dp))
                     Button(onClick = { test() }, enabled = !testing, colors = ButtonDefaults.buttonColors(containerColor = Palette.Gold)) { Text(if (testing) "测试中…" else "测试") }
                 }
-                testOut?.let { Text(it, fontSize = 12.sp, lineHeight = 17.sp, fontFamily = FontFamily.Monospace) }
-                Hint("用当前填写的规则（不用先保存）走一遍：搜索 → 第一本的详情 → 下载链接或目录和第一章。")
+                testOut?.let { out ->
+                    SelectionContainer { Text(out, fontSize = 12.sp, lineHeight = 17.sp, fontFamily = FontFamily.Monospace) }
+                    TextButton(onClick = { copy(context, out); Toast.makeText(context, "已复制测试结果", Toast.LENGTH_SHORT).show() }) { Text("复制测试结果", color = Palette.Gold) }
+                }
+                Hint("用当前填写的规则（不用先保存）走一遍：搜索 → 第一本的详情 → 下载链接或目录和第一章。哪一步没取到东西，会列出网站实际返回的内容，方便对照规则。")
             }
             Block("规则写法") {
                 Hint(RULE_HELP)
@@ -292,6 +303,13 @@ fun SourceEditScreen(url: String, onBack: () -> Unit) {
         confirmButton = { TextButton(onClick = { original?.let { app.sources.delete(it.bookSourceUrl) }; confirmDelete = false; onBack() }) { Text("删除", color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
     )
+}
+
+/** The last requests [c] made, as the site answered them: the tester's answer to "why did nothing come back". */
+private fun diagnosis(c: SourceClient, last: Int = 2): String {
+    val recs = synchronized(c.log) { c.log.takeLast(last) }
+    if (recs.isEmpty()) return ""
+    return "\n—— 诊断：网站实际返回的内容 ——\n" + recs.joinToString("\n\n") { it.describe() } + "\n"
 }
 
 private const val RULE_HELP = """· CSS 选择器后接 @ 取值：div.book h3 a@text、a.cover@href、img@src、#content@html
