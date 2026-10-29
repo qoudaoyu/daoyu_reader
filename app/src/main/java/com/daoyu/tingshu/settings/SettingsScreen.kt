@@ -318,7 +318,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
             }
 
-            Text("刀鱼听书 1.4.2", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline, modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 12.dp))
+            Text("刀鱼听书 1.4.3", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline, modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 12.dp))
         }
     }
 }

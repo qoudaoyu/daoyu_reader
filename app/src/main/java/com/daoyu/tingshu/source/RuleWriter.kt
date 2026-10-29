@@ -54,12 +54,14 @@ class RuleWriter(
             onStep("首页没找到搜索框，让 AI 判断搜索地址…")
             ask(searchUrlPrompt(slim(homeDoc), home.url)).string("searchUrl")
         }
-        if (searchUrl.isBlank()) throw Failed("没找到这个网站的搜索方式", src)
-        src = src.copy(searchUrl = searchUrl)
+        src = src.copy(searchUrl = searchUrl.ifBlank {
+            onStep("试常见的搜索地址…")
+            probeSearch(src, keyword) ?: throw Failed("没找到这个网站的搜索方式（首页没有搜索框，常见的搜索地址也都不对）", src)
+        })
 
         // 2. search results
         onStep("用「$keyword」搜索…")
-        val page = client.fetch(client.buildUrl(src, searchUrl, keyword))
+        val page = client.fetch(client.buildUrl(src, src.searchUrl, keyword))
         var feedback = ""
         var results: List<SearchResult> = emptyList()
         for (attempt in 1..TRIES) {
@@ -150,6 +152,17 @@ class RuleWriter(
         return if (opts.isEmpty()) url else "$url,$opts"
     }
 
+    /** Common search URL shapes; the first whose page links to the book wins. */
+    private suspend fun probeSearch(src: BookSource, keyword: String): String? {
+        for (t in PROBES) {
+            val p = runCatching { client.fetch(client.buildUrl(src, t, keyword)) }.getOrNull() ?: continue
+            if (p.isJson) { if (p.text.contains(keyword)) return t else continue }
+            val doc = Jsoup.parse(p.text, p.url)
+            if (doc.select("a").any { matches(it.text(), keyword) }) return t
+        }
+        return null
+    }
+
     /** What the model sees: JSON as is (cut), HTML without scripts, styles and most attributes, cut around [focus]. */
     private fun sample(p: Page, focus: String?): String {
         if (p.isJson) return "这是 JSON 接口的返回：\n" + p.text.take(LIMIT)
@@ -193,7 +206,7 @@ class RuleWriter(
     private fun searchUrlPrompt(html: String, url: String) = """
 你在帮一个阅读 App 写网站的搜索规则。这是网站首页 $url 的 HTML。请找出搜索书籍的地址。
 用 {{key}} 表示关键词，例如 /search?q={{key}}。POST 请求写成 /search.php,{"method":"POST","body":"searchkey={{key}}"}；GBK 编码的网站在花括号里加 "charset":"gbk"。
-回答 {"searchUrl": "..."}，找不到就回答 {"searchUrl": ""}。
+用 JSON 回答 {"searchUrl": "..."}，找不到就回答 {"searchUrl": ""}。
 
 $html""".trim()
 
@@ -238,6 +251,9 @@ $page""".trim()
 
     companion object {
         const val TRIES = 3
+        private val PROBES = listOf("/search?q={{key}}", "/search?keyword={{key}}", "/search?kw={{key}}", "/s?q={{key}}", "/?s={{key}}",
+            "/search.php?searchkey={{key}}", "/search.html?searchkey={{key}}", "/search/{{key}}", "/s/{{key}}")
+        internal const val SYSTEM = "你帮阅读 App 给网站写书源规则。只回答一个 json 对象，不要解释。"
         const val LIMIT = 24_000
         const val MIN_CHAPTER = 200
         private const val KEY = "\u0000key"
@@ -258,7 +274,11 @@ $page""".trim()
                 if (key.isBlank()) throw Failed("需要先在设置里填写阿里云 API Key（和 CosyVoice、角色分析共用）", null)
                 val body = buildJsonObject {
                     put("model", "qwen3.8-max")
-                    putJsonArray("messages") { addJsonObject { put("role", "user"); put("content", prompt) } }
+                    putJsonArray("messages") {
+                        // json_object mode is refused unless the messages say "json" somewhere
+                        addJsonObject { put("role", "system"); put("content", SYSTEM) }
+                        addJsonObject { put("role", "user"); put("content", prompt) }
+                    }
                     putJsonObject("response_format") { put("type", "json_object") }
                     put("enable_thinking", false)
                 }.toString()

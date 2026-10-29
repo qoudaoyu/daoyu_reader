@@ -163,6 +163,7 @@ class BookSourceTest {
             fun page(body: String) = newFixedLengthResponse(Response.Status.OK, "text/html", "<html><head><meta charset=\"gbk\"></head><body>$body</body></html>".toByteArray(gbk).inputStream(), -1)
                 .also { it.addHeader("Content-Type", "text/html") }
             return when {
+                s.uri == "/noform" -> page("<h1>没有搜索框的首页</h1>")
                 s.uri == "/" -> page("""<h1>测试书城</h1><form action="/search" method="get"><input type="text" name="q"><button>搜索</button></form>""")
                 s.uri == "/search" -> page(if (URLDecoder.decode(s.queryParameterString?.substringAfter("q=") ?: "", "GBK") == "夜雨" || q.isNotEmpty())
                     """<div class="r"><a href="/book/9/">夜雨十年</a><em>佚名</em></div>""" else "")
@@ -300,28 +301,49 @@ class BookSourceTest {
         assertEquals("div.r", src.ruleSearch.bookList)
         assertTrue(prompts.any { it.contains("一条结果都没取到") })   // the retry carried the failure back
         assertTrue(!prompts.first().contains("<script"))
+        assertTrue(com.daoyu.tingshu.source.RuleWriter.SYSTEM.contains("json"))   // DashScope's json_object mode requires the word
         // the written source really works end to end
         val c = SourceClient()
         val r = c.search(src, "夜雨").single()
         assertEquals(5, c.toc(src, c.detail(r).tocUrl).size)
     }
 
+    /** No search box on the home page: the model is asked for the search URL. */
+    @Test fun ruleWriterAsksForSearchUrl() = runBlocking {
+        val asked = mutableListOf<String>()
+        val fake: suspend (String) -> String = { p ->
+            asked += p
+            when {
+                p.contains("请找出搜索书籍的地址") -> """{"searchUrl":"/search?q={{key}},{\"charset\":\"gbk\"}"}"""
+                p.contains("搜索后的结果页") -> """{"bookList":"div.r","name":"a@text","bookUrl":"a@href"}"""
+                p.contains("的详情页") -> """{"type":"text"}"""
+                p.contains("目录页") -> """{"chapterList":"#list dd a","nextTocUrl":"a.next@href"}"""
+                else -> """{"content":"#content@html"}"""
+            }
+        }
+        val src = com.daoyu.tingshu.source.RuleWriter(llm = fake, minChapter = 5).write("$base/noform", "夜雨") {}
+        assertTrue(asked.first().contains("请找出搜索书籍的地址"))
+        assertEquals("/search?q={{key}},{\"charset\":\"gbk\"}", src.searchUrl)
+    }
+
     /** Same, with the real 千问 reading the fake site's pages (costs a few fen; COSY_KEY + RULEGEN_LIVE=1). */
     @Test fun ruleWriterLive() = runBlocking {
         val key = System.getenv("COSY_KEY").orEmpty()
         org.junit.Assume.assumeTrue(key.isNotBlank() && System.getenv("RULEGEN_LIVE") == "1")
-        val steps = mutableListOf<String>()
-        val src = try {
-            com.daoyu.tingshu.source.RuleWriter(llm = com.daoyu.tingshu.source.RuleWriter.qwen(key), minChapter = 5).write(base, "夜雨") { steps += it; println("  · $it") }
-        } catch (e: com.daoyu.tingshu.source.RuleWriter.Failed) {
-            println(Sources.export(listOfNotNull(e.partial))); throw e
+        for (home in listOf(base, "$base/noform")) {
+            println("== $home")
+            val src = try {
+                com.daoyu.tingshu.source.RuleWriter(llm = com.daoyu.tingshu.source.RuleWriter.qwen(key), minChapter = 5).write(home, "夜雨") { println("  · $it") }
+            } catch (e: com.daoyu.tingshu.source.RuleWriter.Failed) {
+                println(Sources.export(listOfNotNull(e.partial))); throw e
+            }
+            println(Sources.export(listOf(src)))
+            val c = SourceClient()
+            val r = c.search(src, "夜雨").single()
+            val toc = c.toc(src, c.detail(r).tocUrl)
+            assertEquals(5, toc.size)
+            assertEquals("这是第2章的正文。\n他说：“你好。”", c.content(src, toc[1].url, toc[2].url))
         }
-        println(Sources.export(listOf(src)))
-        val c = SourceClient()
-        val r = c.search(src, "夜雨").single()
-        val toc = c.toc(src, c.detail(r).tocUrl)
-        assertEquals(5, toc.size)
-        assertEquals("这是第2章的正文。\n他说：“你好。”", c.content(src, toc[1].url, toc[2].url))
     }
 
     @Test fun badRulesFailClearly() = runBlocking {
