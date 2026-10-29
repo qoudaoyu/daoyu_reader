@@ -182,10 +182,6 @@ class BookSourceTest {
                 s.uri == "/f/book/3" -> newFixedLengthResponse(Response.Status.OK, "text/html", """<a class="dl" href="/f/get?id=3">下载 EPUB</a>""")
                 s.uri == "/f/get" -> newFixedLengthResponse(Response.Status.OK, "application/octet-stream", epub().inputStream(), -1)
                     .also { it.addHeader("Content-Disposition", "attachment; filename=\"shanhai.epub\"") }
-                s.uri == "/w/get" -> if (s.headers["cookie"]?.contains("sid=1") == true)
-                    newFixedLengthResponse(Response.Status.OK, "text/plain; charset=utf-8", "第一章 开端\n登录后才能下载的书。\n第二章 结尾\n完。")
-                        .also { it.addHeader("Content-Disposition", "attachment; filename=\"book.txt\"") }
-                    else newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain", "login first")
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "nope")
             }
         }
@@ -277,22 +273,6 @@ class BookSourceTest {
         assertEquals("epub", book.format)
         assertEquals("山海经", book.title)
         assertTrue(app.storage.readChapter(book.id, 0).contains("䧿山"))
-    }
-
-    /** 网页导入: the WebView's cookies ride along, and the suggested file name becomes the title. */
-    @Test fun webImportUsesBrowserCookies() {
-        val app = App.instance
-        val dl = SourceDownloads(app.appScope, app.importer, app.storage)
-        dl.downloadWeb("$base/w/get", "登录书.txt", "sid=1", "TestUA", "$base/w/")
-        val task = awaitTask(dl)
-        assertEquals(task.message, SourceDownloads.Status.DONE, task.status)
-        val book = runBlocking { app.db.books().get(task.bookId)!! }
-        assertEquals("登录书", book.title)
-        assertEquals(2, book.chapterCount)
-
-        val dl2 = SourceDownloads(app.appScope, app.importer, app.storage)
-        dl2.downloadWeb("$base/w/get", "x.txt", null, "TestUA", null)
-        assertEquals(SourceDownloads.Status.FAILED, awaitTask(dl2).status)
     }
 
     @Test fun badRulesFailClearly() = runBlocking {

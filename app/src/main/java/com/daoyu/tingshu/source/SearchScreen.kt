@@ -69,7 +69,7 @@ import kotlinx.coroutines.supervisorScope
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SearchScreen(onBack: () -> Unit, onSources: () -> Unit, onWeb: () -> Unit, onOpenBook: (Long) -> Unit) {
+fun SearchScreen(onBack: () -> Unit, onSources: () -> Unit, onOpenBook: (Long) -> Unit) {
     val app = App.instance
     val context = LocalContext.current
     val focus = LocalFocusManager.current
@@ -118,10 +118,7 @@ fun SearchScreen(onBack: () -> Unit, onSources: () -> Unit, onWeb: () -> Unit, o
             TopAppBar(
                 title = { Text("搜书") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") } },
-                actions = {
-                    TextButton(onClick = onWeb) { Text("网页导入") }
-                    TextButton(onClick = onSources) { Text("书源（${sources.size}）") }
-                },
+                actions = { TextButton(onClick = onSources) { Text("书源（${sources.size}）") } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
         }
@@ -170,8 +167,7 @@ fun SearchScreen(onBack: () -> Unit, onSources: () -> Unit, onWeb: () -> Unit, o
                     Text(
                         "在已启用的书源里搜索并下载书籍，下载后自动加入书架，可直接阅读和听书。\n\n" +
                             "书源由你自己添加：在「书源」里填写网站地址和搜索、解析规则，也可以粘贴「阅读」(Legado) 格式的书源 JSON。" +
-                            "内置的「古腾堡计划」是公版书示例。\n\n" +
-                            "不想写规则？点右上角「网页导入」，像用浏览器一样打开网站，点下载链接书就会自动进书架。请只使用你有权下载的正版或公版资源。",
+                            "内置的「古腾堡计划」是公版书示例。请只使用你有权下载的正版或公版资源。",
                         fontSize = 13.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -196,7 +192,7 @@ private fun ResultRow(r: SearchResult, onClick: () -> Unit) {
 }
 
 @Composable
-internal fun TaskRow(t: SourceDownloads.Task, onCancel: () -> Unit, onOpen: () -> Unit) {
+private fun TaskRow(t: SourceDownloads.Task, onCancel: () -> Unit, onOpen: () -> Unit) {
     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

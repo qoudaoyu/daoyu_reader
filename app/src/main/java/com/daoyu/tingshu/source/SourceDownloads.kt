@@ -17,8 +17,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
@@ -55,33 +53,14 @@ class SourceDownloads(
 
     /** Downloads a TXT / EPUB file link. */
     fun downloadFile(result: SearchResult, detail: BookDetail, url: String) = launch(result, detail) { id ->
-        importLink(id, result.source, url) { ext -> fileName(detail, ext) }
-    }
-
-    /**
-     * A download started in the in-app browser. [cookies] and [userAgent] come from the WebView so that
-     * sites behind a login hand over the same file they would give the browser.
-     */
-    fun downloadWeb(url: String, suggestedName: String, cookies: String?, userAgent: String, referer: String?) {
-        val base = suggestedName.substringBeforeLast('.').replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifEmpty { "未命名" }
-        val headers = buildJsonObject {
-            put("User-Agent", userAgent)
-            if (!cookies.isNullOrBlank()) put("Cookie", cookies)
-            if (!referer.isNullOrBlank()) put("Referer", referer)
-        }
-        val src = BookSource(bookSourceUrl = url, bookSourceName = "网页导入", header = headers.toString())
-        launch(base, src.bookSourceName) { id -> importLink(id, src, url) { ext -> "$base.$ext" } }
-    }
-
-    private suspend fun importLink(id: Int, src: BookSource, url: String, name: (String) -> String): BookImporter.Result {
         val tmp = File.createTempFile("dl_", ".bin", storage.tmpDir)
         try {
             update(id) { it.copy(message = "正在下载…") }
-            val ext = client.download(src, url, tmp) { done, total ->
+            val ext = client.download(result.source, url, tmp) { done, total ->
                 update(id) { it.copy(message = "正在下载 " + sizeText(done) + if (total > 0) " / " + sizeText(total) else "", done = done.toInt(), total = total.toInt().coerceAtLeast(0)) }
             } ?: throw SourceException("下载的不是 TXT 或 EPUB 文件")
             update(id) { it.copy(message = "正在导入…") }
-            return importer.importFile(name(ext), tmp)
+            importer.importFile(fileName(detail, ext), tmp)
         } finally {
             tmp.delete()
         }
@@ -148,12 +127,9 @@ class SourceDownloads(
         return null
     }
 
-    private fun launch(result: SearchResult, detail: BookDetail, work: suspend (Int) -> BookImporter.Result) =
-        launch(detail.name.ifBlank { result.name }, result.source.bookSourceName, work)
-
-    private fun launch(title: String, sourceName: String, work: suspend (Int) -> BookImporter.Result) {
+    private fun launch(result: SearchResult, detail: BookDetail, work: suspend (Int) -> BookImporter.Result) {
         val id = ids.incrementAndGet()
-        _tasks.update { listOf(Task(id, title, sourceName)) + it }
+        _tasks.update { listOf(Task(id, detail.name.ifBlank { result.name }, result.source.bookSourceName)) + it }
         jobs[id] = scope.launch(Dispatchers.IO) {
             try {
                 when (val r = work(id)) {
