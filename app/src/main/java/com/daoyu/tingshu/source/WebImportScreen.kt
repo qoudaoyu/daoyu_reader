@@ -36,7 +36,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.ui.graphics.Color
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -79,6 +83,7 @@ fun WebImportScreen(onBack: () -> Unit, onOpenBook: (Long) -> Unit) {
     var progress by remember { mutableStateOf(100) }
     var web by remember { mutableStateOf<WebView?>(null) }
     var showing by remember { mutableStateOf(false) }   // false = start page with recent sites
+    var pending by remember { mutableStateOf<String?>(null) }   // first URL, loaded once the WebView exists
 
     fun go(input: String) {
         val t = input.trim()
@@ -87,7 +92,7 @@ fun WebImportScreen(onBack: () -> Unit, onOpenBook: (Long) -> Unit) {
         focus.clearFocus()
         address = url
         showing = true
-        web?.loadUrl(url)
+        web?.loadUrl(url) ?: run { pending = url }
         recent = RecentSites.add(context, url)
     }
 
@@ -107,19 +112,43 @@ fun WebImportScreen(onBack: () -> Unit, onOpenBook: (Long) -> Unit) {
         }
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad).imePadding()) {
-            OutlinedTextField(
+            // a filled bar rather than an outline: some ROMs draw the outline and placeholder too faintly to see
+            TextField(
                 address, { address = it },
-                placeholder = { Text("输入网址，如 www.gutenberg.org") },
+                label = { Text("网址") },
+                placeholder = { Text("如 www.gutenberg.org，输入后点键盘上的「前往」") },
+                leadingIcon = { Icon(Icons.Default.Language, null) },
                 singleLine = true,
-                trailingIcon = { if (address.isNotEmpty()) IconButton(onClick = { address = "" }) { Icon(Icons.Default.Close, "清空") } },
+                shape = RoundedCornerShape(14.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                    focusedLabelColor = Palette.Gold,
+                    unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    focusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unfocusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    cursorColor = Palette.Gold,
+                ),
+                trailingIcon = {
+                    if (address.isNotEmpty()) Row {
+                        if (!showing) IconButton(onClick = { go(address) }) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "前往", tint = Palette.Gold) }
+                        IconButton(onClick = { address = "" }) { Icon(Icons.Default.Close, "清空") }
+                    }
+                },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go, keyboardType = KeyboardType.Uri),
                 keyboardActions = KeyboardActions(onGo = { go(address) }),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
             )
             if (showing && progress < 100) LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth(), color = Palette.Gold)
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                AndroidView(
+                // the WebView only exists while a page is shown: on some devices an idle WebView paints white over
+                // the Compose views around it, hiding the address bar
+                if (showing) AndroidView(
                     factory = { ctx ->
                         WebView(ctx).apply {
                             settings.javaScriptEnabled = true
@@ -151,12 +180,13 @@ fun WebImportScreen(onBack: () -> Unit, onOpenBook: (Long) -> Unit) {
                                 Toast.makeText(ctx, "开始下载 $name，完成后自动加入书架", Toast.LENGTH_SHORT).show()
                             }
                             web = this
+                            pending?.let { loadUrl(it); pending = null }
                         }
                     },
-                    onRelease = { it.destroy() },
+                    onRelease = { if (web === it) web = null; it.destroy() },
                     modifier = Modifier.fillMaxSize()
                 )
-                if (!showing) StartPage(recent, onPick = { go(it) }, onRemove = { recent = RecentSites.remove(context, it) })
+                else StartPage(recent, onPick = { go(it) }, onRemove = { recent = RecentSites.remove(context, it) })
             }
 
             // downloads started from this page
@@ -173,7 +203,7 @@ private fun StartPage(recent: List<String>, onPick: (String) -> Unit, onRemove: 
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
-                "在这里像平时一样打开网站、搜书。点到 TXT 或 EPUB 的下载链接时，书会自动下载并加入书架，不用写任何规则。\n" +
+                "在上面的「网址」框里输入网站地址，点键盘上的「前往」打开。像平时一样搜书，点到 TXT 或 EPUB 的下载链接时，书会自动下载并加入书架，不用写任何规则。\n" +
                     "需要登录的网站，在这里登录一次就会记住。请只下载你有权获取的正版或公版书。",
                 fontSize = 13.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
             )
