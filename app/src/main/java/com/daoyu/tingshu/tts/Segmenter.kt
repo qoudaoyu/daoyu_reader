@@ -6,6 +6,7 @@ data class Seg(
     val drama: Boolean = false,          // multi-role mode segment
     val role: String? = null,            // speaker for a quoted line; null = narration
     val emotion: String = "",
+    val intensity: Int = -1,             // 0 calm … 3 intense; -1 = unknown
 )
 
 object Segmenter {
@@ -57,9 +58,9 @@ object Segmenter {
             val innerEnd = (l.end - 1).coerceAtLeast(innerStart)
             val inner = body.substring(innerStart, innerEnd)
             if (inner.length <= maxLen) {
-                if (speakable.containsMatchIn(inner)) out.add(Seg(chapter, if (innerStart == l.start + 1) l.start else innerStart, l.end, inner.trim(), true, l.speaker, l.emotion))
+                if (speakable.containsMatchIn(inner)) out.add(Seg(chapter, if (innerStart == l.start + 1) l.start else innerStart, l.end, inner.trim(), true, l.speaker, l.emotion, l.intensity))
             } else {
-                split(chapter, body.substring(0, innerEnd), innerStart, maxLen).forEach { out.add(it.copy(drama = true, role = l.speaker, emotion = l.emotion)) }
+                split(chapter, body.substring(0, innerEnd), innerStart, maxLen).forEach { out.add(it.copy(drama = true, role = l.speaker, emotion = l.emotion, intensity = l.intensity)) }
             }
             pos = l.end
         }

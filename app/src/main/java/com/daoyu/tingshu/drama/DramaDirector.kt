@@ -4,6 +4,7 @@ import com.daoyu.tingshu.App
 import com.daoyu.tingshu.data.TtsUsage
 import com.daoyu.tingshu.tts.Http
 import com.daoyu.tingshu.tts.TtsException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -76,14 +77,28 @@ class DramaDirector {
 
     fun cast(bookId: Long): StateFlow<Cast> = castFlow(bookId).asStateFlow()
 
+    /** Books whose cast.json could not be read. The file is kept as cast.json.broken and the listener is told. */
+    private val brokenCast = ConcurrentHashMap.newKeySet<Long>()
+
+    fun castBroken(bookId: Long): Boolean { castFlow(bookId); return bookId in brokenCast }
+
     private fun castFlow(bookId: Long) = casts.getOrPut(bookId) {
         val f = castFile(bookId)
-        MutableStateFlow(if (f.exists()) runCatching { json.decodeFromString<Cast>(f.readText()) }.getOrDefault(Cast()) else Cast())
+        val c = if (!f.exists()) Cast() else runCatching { json.decodeFromString<Cast>(f.readText()) }.getOrElse {
+            brokenCast.add(bookId)
+            runCatching { f.copyTo(File(f.path + ".broken"), overwrite = true) }
+            Cast()
+        }
+        MutableStateFlow(c)
     }
 
+    /** Writes the cast to disk first (atomically) and only then publishes it, so voices in use are always saved ones. */
     private fun saveCast(bookId: Long, c: Cast) {
+        val f = castFile(bookId)
+        val tmp = File(f.path + ".tmp")
+        tmp.writeText(json.encodeToString(Cast.serializer(), c))
+        if (!tmp.renameTo(f)) { f.delete(); if (!tmp.renameTo(f)) throw IOException("角色表保存失败") }
         castFlow(bookId).value = c
-        castFile(bookId).writeText(json.encodeToString(Cast.serializer(), c))
     }
 
     /** Follows merges; returns the member that actually speaks for [name], or null for narrator/passer-by. */
@@ -103,6 +118,16 @@ class DramaDirector {
     suspend fun setNarrator(bookId: Long, edgeVoice: String) = lock(bookId).withLock {
         saveCast(bookId, castFlow(bookId).value.copy(narratorVoice = edgeVoice))
     }
+
+    suspend fun setNarratorDoubao(bookId: Long, voice: String) = lock(bookId).withLock {
+        saveCast(bookId, castFlow(bookId).value.copy(narratorDoubao = voice))
+    }
+
+    /** True when narration is voiced by 豆包 rather than Edge. */
+    fun narratesWithDoubao(): Boolean = usesDoubao() && app.settings.tts.value.dramaNarratorEngine == "doubao"
+
+    /** The 豆包 voice narrating [bookId]; characters are not given this voice automatically. */
+    fun narratorDoubao(bookId: Long): String = cast(bookId).value.narratorDoubao ?: app.settings.tts.value.dramaNarratorDoubao
 
     /** "A is really B": A's lines are spoken with B's voice from now on. */
     suspend fun merge(bookId: Long, from: String, into: String) = lock(bookId).withLock {
@@ -356,26 +381,27 @@ class DramaDirector {
      * anything it gets wrong falls back to a gender/age rule.
      */
     suspend fun ensureDoubaoVoices(bookId: Long) {
-        // automatic picks that landed on a flat voice (1.3.0) are chosen again
-        val flat = castFlow(bookId).value.members.filter { !it.doubaoUser && DoubaoVoices.isFlat(it.doubaoVoice) }
-        if (flat.isNotEmpty()) lock(bookId).withLock {
-            val c = castFlow(bookId).value
-            saveCast(bookId, c.copy(members = c.members.map { if (!it.doubaoUser && DoubaoVoices.isFlat(it.doubaoVoice)) it.copy(doubaoVoice = "") else it }))
-        }
+        // a voice once given to a character is never taken away automatically; only the listener changes it
         val todo = castFlow(bookId).value.members.filter { it.mergedInto == null && it.doubaoVoice.isEmpty() && !it.doubaoUser }
-        if (todo.isEmpty() || !picking.add(bookId)) return
+        if (todo.isEmpty()) return
+        if (!picking.add(bookId)) {
+            // another call is already choosing: wait for it, so callers only go on with saved voices
+            while (bookId in picking) delay(200)
+            return
+        }
         try {
             val picks = HashMap<String, String>()
             runCatching {
                 val taken = castFlow(bookId).value.members.filter { it.mergedInto == null && it.doubaoVoice.isNotEmpty() }
                     .sortedByDescending { it.lines }.take(20)
+                val narrator = if (narratesWithDoubao()) "\n旁白 → ${narratorDoubao(bookId)}（不要选这个）" else ""
                 val prompt = """你是有声书配音导演。请从下面的豆包音色库里，为每个新角色挑选最贴合的音色。
 要求：性别必须一致；年龄段尽量一致；优先匹配角色的性格与嗓音描述；同等合适时选"表现力"分高的（分数是实测的情绪表现力，越高越有戏）；不要和"已占用"里的主要角色重复，除非实在没有合适的。
 音色库（id|名称|性别|年龄|特点|表现力）：
 ${DoubaoVoices.catalogText(todo.map { if (it.gender.startsWith("女")) "女" else "男" }.toSet())}
 
 已占用：
-${taken.joinToString("\n") { "${it.name}（${it.gender}，${it.age}）→ ${it.doubaoVoice}" }.ifEmpty { "无" }}
+${taken.joinToString("\n") { "${it.name}（${it.gender}，${it.age}）→ ${it.doubaoVoice}" }.ifEmpty { "无" }}$narrator
 
 新角色：
 ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceDesc.ifEmpty { "无描述" }}｜已说 ${it.lines} 句" }}
@@ -390,11 +416,12 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
                 }
             }.onFailure { lastError = it.message }
             lock(bookId).withLock {
+                val narrator = if (narratesWithDoubao()) narratorDoubao(bookId) else null
                 val members = castFlow(bookId).value.members.toMutableList()
                 for (i in members.indices) {
                     val m = members[i]
                     if (m.mergedInto != null || m.doubaoVoice.isNotEmpty() || m.doubaoUser) continue
-                    val v = picks[m.name]?.takeIf { DoubaoVoices.acceptable(it, m.gender) } ?: DoubaoVoices.assign(m.gender, m.age, members)
+                    val v = picks[m.name]?.takeIf { DoubaoVoices.acceptable(it, m.gender) && it != narrator } ?: DoubaoVoices.assign(m.gender, m.age, members, narrator)
                     members[i] = m.copy(doubaoVoice = v)
                 }
                 saveCast(bookId, castFlow(bookId).value.copy(members = members))
@@ -425,7 +452,19 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
         try {
             return try { analysePart(bookId, ch, body, part, quotes, withContext) }
             catch (e: ContentBlocked) { throw e }
-            catch (e: Exception) { analysePart(bookId, ch, body, part, quotes, withContext) }   // one retry for other errors
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                try { analysePart(bookId, ch, body, part, quotes, withContext) }   // one retry for other errors
+                catch (e2: ContentBlocked) { throw e2 }
+                catch (e2: CancellationException) { throw e2 }
+                catch (e2: Exception) {
+                    // 千问 itself is failing (model retired, quota, outage): Grok takes the part if it can be reached
+                    if (grokMain() || !app.settings.tts.value.grokRescue || !grokUsable()) throw e2
+                    try { analysePart(bookId, ch, body, part, quotes, withContext, forceGrok = true).also { grokFallback.incrementAndGet(); grokFallbackReason = e2.message } }
+                    catch (e3: CancellationException) { throw e3 }
+                    catch (_: Exception) { throw e2 }
+                }
+            }
         } catch (e: ContentBlocked) {
             blockedParts.incrementAndGet()
             // Grok does not apply the Aliyun filter: hand it the whole part if it can be reached
@@ -456,13 +495,23 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
     val blockedParts = java.util.concurrent.atomic.AtomicInteger(0)
     val grokRescued = java.util.concurrent.atomic.AtomicInteger(0)
 
+    /** Parts Grok analysed because 千问 kept failing for reasons other than the content filter. */
+    val grokFallback = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Why 千问 failed the last time Grok stepped in; shown to the listener once. */
+    @Volatile var grokFallbackReason: String? = null
+
+    /** "林墨（少年）" / " 林墨 " → "林墨". */
+    private fun cleanName(s: String) = s.replace(Regex("[（(][^）)]*[）)]"), "").trim()
+
     private val speechVerbs = Regex("(道|说|问|喊|叫|笑|叹|喝|吼|骂|答|应|嚷|嘀咕|开口|低语|冷哼|怒斥)")
 
     /** Fallback attribution: the nearest known name in "某某(冷笑)道：“…”" / "“…”某某道" around the quote. */
-    private fun ruleBased(bookId: Long, body: String, quotes: List<IntRange>): List<RoleLine> {
+    private fun ruleBased(bookId: Long, body: String, quotes: List<IntRange>, known: Map<Int, String> = emptyMap()): List<RoleLine> {
         val members = castFlow(bookId).value.members.filter { it.mergedInto == null }
         val names = members.flatMap { m -> (listOf(m.name) + m.aliases.filter { it.length >= 2 }).map { it to m.name } }.sortedByDescending { it.first.length }
         return quotes.map { q ->
+            known[q.first]?.let { return@map it }
             val lineStart = body.lastIndexOf('\n', q.first).let { if (it < 0) 0 else it + 1 }
             val lineEnd = body.indexOf('\n', q.last).let { if (it < 0) body.length else it }
             val before = body.substring(maxOf(lineStart, q.first - 30), q.first)
@@ -471,12 +520,28 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
                 val hits = names.mapNotNull { (alias, name) -> val i = if (fromEnd) t.lastIndexOf(alias) else t.indexOf(alias); if (i >= 0 && speechVerbs.containsMatchIn(t.substring(i))) (i to name) else null }
                 return (if (fromEnd) hits.maxByOrNull { it.first } else hits.minByOrNull { it.first })?.second
             }
-            val who = find(after.substringBefore('“'), false) ?: find(before.substringAfterLast('”'), true)
-            RoleLine(q.first, q.last + 1, who ?: Roles.PASSERBY)
+            val intro = before.substringAfterLast('”')
+            // "林墨抬起头：“…”" has no speech verb, but a colon right before the quote still names the speaker
+            val colon = if (intro.trimEnd().endsWith('：') || intro.trimEnd().endsWith(':')) names.mapNotNull { (alias, name) -> intro.lastIndexOf(alias).takeIf { it >= 0 }?.let { it to name } }.maxByOrNull { it.first }?.second else null
+            find(after.substringBefore('“'), false) ?: find(intro, true) ?: colon
+        }.let { who ->
+            // untagged lines in a back-and-forth (nothing but line breaks between the quotes): the speaker of the
+            // line before last speaks again
+            fun adjacent(i: Int) = body.substring(quotes[i - 1].last + 1, quotes[i].first).isBlank()
+            val res = who.toMutableList()
+            for (i in res.indices) {
+                if (res[i] != null || i < 2 || !adjacent(i)) continue
+                val a = res[i - 2]; val b = res[i - 1]
+                if (a != null && b != null && a != b) res[i] = a
+            }
+            quotes.mapIndexed { i, q -> RoleLine(q.first, q.last + 1, res[i] ?: Roles.PASSERBY) }
         }
     }
 
-    private suspend fun analysePart(bookId: Long, ch: Int, body: String, part: IntRange, quotes: List<IntRange>, withContext: Boolean = true, forceGrok: Boolean = false): List<RoleLine> {
+    /** The reply left out or garbled the speaker of too many lines; the part is asked once more. */
+    private class MalformedReply : Exception()
+
+    private suspend fun analysePart(bookId: Long, ch: Int, body: String, part: IntRange, quotes: List<IntRange>, withContext: Boolean = true, forceGrok: Boolean = false, attempt: Int = 0): List<RoleLine> {
         val text = body.substring(part.first, part.last + 1)
         // mark quotes as 【Q0】“…”
         val sb = StringBuilder()
@@ -489,10 +554,12 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
         // a part in the middle of a chapter gets the preceding lines as context (who was talking to whom)
         val before = if (withContext && part.first > 0) body.substring(maxOf(0, part.first - 400), part.first).substringAfter('\n') else ""
 
-        // only send characters that appear in this text, plus the most important ones
+        // only send characters that appear in this text or just before it, plus the most important ones; a known
+        // character missing here (only called 他/老者 in this part) used to come back as a passer-by
         val all = castFlow(bookId).value.members.filter { it.mergedInto == null }
-        val relevant = (all.filter { m -> (listOf(m.name) + m.aliases).any { it.length >= 2 && text.contains(it) } } +
-            all.sortedByDescending { it.lines }.take(6)).distinctBy { it.name }.take(40)
+        val near = text + before
+        val relevant = (all.filter { m -> (listOf(m.name) + m.aliases).any { it.length >= 2 && near.contains(it) } } +
+            all.sortedByDescending { it.lines }.take(12)).distinctBy { it.name }.take(40)
         val registry = buildJsonArray {
             relevant.forEach { m -> addJsonObject { put("name", m.name); putJsonArray("aliases") { m.aliases.forEach { add(it) } }; put("gender", m.gender); put("age", m.age) } }
         }
@@ -507,12 +574,14 @@ $registry
 - 留意回话里的称呼：下一句怎么称呼对方（如"小丫头""老夫""哥"），能反推出上一句是谁说的；性别、辈分要对得上。
 - 引号里如果不是有人说出口的话，speaker 填"旁白"：强调词或外号（所谓的"天才"）、牌匾招牌、书名、俗语名言、转述或回忆里提到的字句（他想起"活下去"三个字）。
 - 角色的心里话（心道、暗想）算该角色的对白。
-- 无名人物（下人、围观者、众人）填"路人"。
+- 没有名字但身份明确、说话不止一两句的配角（卖花的女孩、店小二、老妇人），用身份当名字（如"卖花女孩"），作为角色列进 characters 并标出性别、年龄。
+- 角色表里的人或本段有名字的人，即使这句只用代称（他、她、少年、那人、老者、家主、哥），也要结合上下文判断是谁并填标准名，不要填"路人"。
+- 其余无名人物（围观者、一闪而过的下人）和群体（众人、亲友们、几个人齐声）：男性或不确定填"路人"，女性填"路人女"，不要列进 characters。
 
 输出 JSON：
-1. characters：本段所有说过话的有名角色（含角色表里已有的，必须沿用标准名）。gender 男/女；age 儿童/少年/青年/中年/老年；aliases 为本段里对他的其他称呼；voice 用一句话描述适合他的嗓音和说话气质（年龄、嗓音、性格），如"四十多岁，嗓音低沉浑厚，说话沉稳威严"。
-2. lines：每个编号一项，写成数组 [编号, "引号内前4个字", "说话人", "语气"]。说话人必须是标准名、"路人"或"旁白"；语气是给配音的指令，8~20 字，只写声音上听得出来的：情绪和强度、音量、语速、气息（如"压着怒火咬牙低吼""带哭腔急切委屈""慢悠悠阴阳怪气地冷笑"），结合上下文把情绪写足。
-只输出 JSON：{"characters":[{"name":"","aliases":[],"gender":"","age":"","voice":""}],"lines":[[0,"","",""]]}
+1. characters：本段所有说过话的有名角色，只说一两句的也算（如"杨泉正站在一旁……道"里的杨泉），含角色表里已有的，必须沿用标准名。gender 男/女；age 儿童/少年/青年/中年/老年；aliases 为本段里对他的其他称呼；voice 用一句话描述适合他的嗓音和说话气质（年龄、嗓音、性格），如"四十多岁，嗓音低沉浑厚，说话沉稳威严"。
+2. lines：每个编号一项，写成 {"id":编号,"head":"引号内前4个字","speaker":"说话人","emotion":"语气","intensity":强度}，五个字段都要有。speaker 必须是标准名、"路人"、"路人女"或"旁白"；emotion 是给配音的指令，8~20 字，只写声音上听得出来的：情绪和强度、音量、语速、气息（如"压着怒火咬牙低吼""带哭腔急切委屈""慢悠悠阴阳怪气地冷笑"），结合上下文判断情绪；intensity 是整数 0~3：0 平常说话（寒暄、交代事情，emotion 可留空），1 带点情绪，2 情绪明显，3 情绪强烈（怒吼、痛哭、狂喜）。多数日常对白是 0 或 1，不要每句都拔高。
+只输出 JSON：{"characters":[{"name":"","aliases":[],"gender":"","age":"","voice":""}],"lines":[{"id":0,"head":"","speaker":"","emotion":"","intensity":0}]}
 
 ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\n【正文】\n" else ""}$sb"""
 
@@ -520,13 +589,19 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
         onReply?.invoke(prompt, reply)
         val root = json.parseToJsonElement(reply.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()).jsonObject
 
+        try { return attribute(bookId, body, quotes, root, strict = attempt == 0) }
+        catch (_: MalformedReply) { return analysePart(bookId, ch, body, part, quotes, withContext, forceGrok, attempt + 1) }
+    }
+
+    /** Maps a reply onto the quotes and saves new characters. [strict]: throw [MalformedReply] for a garbled reply. */
+    private suspend fun attribute(bookId: Long, body: String, quotes: List<IntRange>, root: kotlinx.serialization.json.JsonObject, strict: Boolean): List<RoleLine> {
         lock(bookId).withLock {
             var members = castFlow(bookId).value.members.toMutableList()
             // new characters → cast, with an automatically assigned voice
             (root["characters"] ?: root["new_characters"])?.jsonArray?.forEach { e ->
                 val o = e.jsonObject
-                val name = o["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-                if (name.isEmpty() || name == Roles.NARRATOR || name == Roles.PASSERBY) return@forEach
+                val name = cleanName(o["name"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                if (name.isEmpty() || name == Roles.NARRATOR || Roles.isPasserby(name)) return@forEach
                 val aliases = o["aliases"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull?.trim() }?.filter { it.isNotEmpty() && it != name }.orEmpty()
                 val existing = members.indexOfFirst { it.name == name || name in it.aliases }
                 val desc = o["voice"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().take(60)
@@ -541,16 +616,20 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
             }
             val out = ArrayList<RoleLine>()
             val counts = HashMap<String, Int>()
+            var bad = 0
             // align each answer to its quote: trust the id only if the echoed opening words match
             fun norm(t: String) = t.filter { it.isLetterOrDigit() }
             val quoteHeads = quotes.map { norm(body.substring(it.first, it.last + 1)) }
             val taken = HashSet<Int>()
             root["lines"]?.jsonArray?.forEach { e ->
-                // compact form [id, head, speaker, tone]; the older object form is still understood
+                // {"id","head","speaker","emotion","intensity"}: with the array form [id, head, speaker, tone, level]
+                // qwen3.8-max sometimes dropped the speaker column for a whole part (1.3.10); arrays are still read
                 val arr = e as? kotlinx.serialization.json.JsonArray
                 val o = e as? kotlinx.serialization.json.JsonObject
                 fun field(i: Int, k: String) = (arr?.getOrNull(i) ?: o?.get(k))?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull }
                 val id = field(0, "id")?.trim()?.toIntOrNull() ?: return@forEach
+                // [0, "幼娘，你", "心疼自责又急切", 2]: the speaker column is missing, the tone sits in its place
+                if (arr != null && arr.size == 4 && (arr[3] as? kotlinx.serialization.json.JsonPrimitive)?.isString == false) { bad++; return@forEach }
                 // the model sometimes copies past the closing quote: 糊涂！”林震天… → 糊涂
                 val head = norm(field(1, "head").orEmpty().split('”', '」', '』', '"').first()).take(4)
                 fun matches(i: Int): Boolean {
@@ -571,25 +650,45 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
                 }
                 taken.add(idx)
                 val r = quotes[idx]
-                var sp = field(2, "speaker")?.trim().orEmpty()
+                var sp = cleanName(field(2, "speaker").orEmpty())
                 val known = members.firstOrNull { it.name == sp && it.mergedInto == null } ?: members.firstOrNull { it.name == sp }
                     ?: members.filter { sp in it.aliases }.singleOrNull()
+                    // "如烟" for 柳如烟, "林墨少爷" for 林墨: one character only, otherwise it stays unknown
+                    ?: sp.takeIf { it.length >= 2 && !Roles.isPasserby(it) && it != Roles.NARRATOR }?.let { t ->
+                        members.filter { m -> m.mergedInto == null && (listOf(m.name) + m.aliases).any { n -> n.length >= 2 && (t.contains(n) || n.contains(t)) } }.singleOrNull()
+                    }
                 sp = when {
                     sp == Roles.NARRATOR -> Roles.NARRATOR
+                    sp == Roles.PASSERBY_F -> Roles.PASSERBY_F
                     known != null -> known.name
-                    else -> Roles.PASSERBY
+                    else -> { if (sp != Roles.PASSERBY) bad++; Roles.PASSERBY }
                 }
                 if (known != null) counts[known.name] = (counts[known.name] ?: 0) + 1
-                out.add(RoleLine(r.first, r.last + 1, sp, field(3, "emotion").orEmpty().trim().take(40)))
+                out.add(RoleLine(r.first, r.last + 1, sp, field(3, "emotion").orEmpty().trim().take(40), field(4, "intensity")?.trim()?.toIntOrNull()?.coerceIn(0, 3) ?: -1))
             }
+            if (strict && bad >= 2 && bad * 10 > quotes.size * 3) throw MalformedReply()
             members = members.map { m -> counts[m.name]?.let { m.copy(lines = m.lines + it) } ?: m }.toMutableList()
             saveCast(bookId, castFlow(bookId).value.copy(members = members))
-            // quotes the model skipped are treated as passer-by lines
+            // quotes the model skipped: "某某道" rules rather than a passer-by voice
             val covered = out.map { it.start }.toSet()
-            quotes.filter { it.first !in covered }.forEach { out.add(RoleLine(it.first, it.last + 1, Roles.PASSERBY)) }
+            if (quotes.any { it.first !in covered }) {
+                // the model's own answers keep a back-and-forth going for the lines it left out
+                val answered = out.filter { it.speaker != Roles.NARRATOR && !Roles.isPasserby(it.speaker) }.associate { it.start to it.speaker }
+                out.addAll(ruleBased(bookId, body, quotes, answered).filter { it.start !in covered })
+            }
             return out.sortedBy { it.start }
         }
     }
+
+    /** Offline tests: answers every model call. */
+    internal var fakeLlmForTest: ((String) -> String)? = null
+
+    internal suspend fun analyseForTest(bookId: Long, body: String): List<RoleLine> {
+        val quotes = QuoteFinder.find(body)
+        return analysePart(bookId, 0, body, body.indices, quotes, withContext = false)
+    }
+
+    internal fun ruleBasedForTest(bookId: Long, body: String) = ruleBased(bookId, body, QuoteFinder.find(body))
 
     /**
      * Chat call to the analysis model, streamed: a long reply arrives piece by piece, so it can never hit
@@ -601,6 +700,9 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
 
     /** Test hook: pretend Grok cannot be reached. */
     internal var simulateGrokDown = false
+
+    /** Test hook: pretend every 千问 analysis call fails (as when the model is retired). */
+    internal var simulateQwenDown = false
 
     @Volatile private var grokDownUntil = 0L
 
@@ -615,6 +717,7 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
      * @param forceGrok used for parts the Aliyun content filter refused: Grok or nothing.
      */
     private suspend fun callLlm(prompt: String, forceGrok: Boolean = false): String {
+        fakeLlmForTest?.let { return it(prompt) }
         val grok = forceGrok || grokMain()
         if (!grok) return callModel(prompt, grok = false)
         return try { callModel(prompt, grok = true) } catch (e: GrokUnreachable) {
@@ -630,10 +733,11 @@ ${if (before.isNotBlank()) "【上文，仅供理解，不用标注】\n$before\
 
     private suspend fun callModel(prompt: String, grok: Boolean): String = withContext(Dispatchers.IO) {
         if (grok && simulateGrokDown) throw GrokUnreachable("simulated")
+        if (!grok && simulateQwenDown) throw TtsException("角色分析失败：Model not exist.（模拟）")
         if (!grok) simulateBlock?.let { if (prompt.contains(it)) throw ContentBlocked("Input data may contain inappropriate content.") }
         val key = if (grok) app.keys.grokKey else app.keys.cosyKey
         if (key.isBlank()) throw TtsException(if (grok) "未填写 Grok API Key" else "多角色需要阿里云 API Key（与 CosyVoice 共用）")
-        val qwenModel = app.settings.tts.value.directorModel.let { if (it == GROK_MODEL) "qwen3-max" else it }
+        val qwenModel = app.settings.tts.value.directorModel.let { if (it == GROK_MODEL) "qwen3.8-max" else it }
         val body = buildJsonObject {
             put("model", if (grok) GROK_MODEL else qwenModel)
             putJsonArray("messages") { addJsonObject { put("role", "user"); put("content", prompt) } }

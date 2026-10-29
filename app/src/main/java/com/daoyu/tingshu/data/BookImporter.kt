@@ -60,45 +60,57 @@ class BookImporter(
             } catch (e: Throwable) {
                 return@withContext Result.Fail("解析失败：${e.message ?: e.javaClass.simpleName}")
             }
+            store(name, file, format, parsed)
+        }
+    }
 
-            val id = db.books().insert(Book(title = parsed.title, author = parsed.author, format = format, sourceName = name, fileSize = file.length()))
-            try {
-                val dir = storage.dir(id).apply { mkdirs() }
-                file.copyTo(File(dir, "source.$format"), overwrite = true)
-                val chDir = File(dir, "chapters").apply { mkdirs() }
-                var start = 0L
-                val rows = parsed.chapters.mapIndexed { i, c ->
-                    File(chDir, "$i.txt").writeText(c.body)
-                    Chapter(id, i, c.title, c.body.length, start).also { start += c.body.length }
-                }
-                db.chapters().insertAll(rows)
+    /** Imports a book whose chapters are already split (e.g. fetched chapter by chapter from a book source). [file] is kept as source.txt. */
+    suspend fun importParsed(name: String, file: File, parsed: ParsedBook): Result = withContext(Dispatchers.IO) {
+        lock.withLock {
+            db.books().findSame(name, file.length())?.let { return@withContext Result.Ok(it, duplicate = true) }
+            if (parsed.chapters.isEmpty()) return@withContext Result.Fail("没有可导入的章节")
+            store(name, file, "txt", parsed)
+        }
+    }
 
-                var coverPath: String? = null
-                parsed.cover?.let { bytes ->
-                    // downscale large covers to keep the shelf smooth
-                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-                    if (opts.outWidth > 0) {
-                        var sample = 1
-                        while (opts.outWidth / (sample * 2) >= 360) sample *= 2
-                        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
-                        if (bmp != null) {
-                            val f = File(dir, "cover.jpg")
-                            f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, it) }
-                            coverPath = f.absolutePath
-                        }
+    private suspend fun store(name: String, file: File, format: String, parsed: ParsedBook): Result {
+        val id = db.books().insert(Book(title = parsed.title, author = parsed.author, format = format, sourceName = name, fileSize = file.length()))
+        try {
+            val dir = storage.dir(id).apply { mkdirs() }
+            file.copyTo(File(dir, "source.$format"), overwrite = true)
+            val chDir = File(dir, "chapters").apply { mkdirs() }
+            var start = 0L
+            val rows = parsed.chapters.mapIndexed { i, c ->
+                File(chDir, "$i.txt").writeText(c.body)
+                Chapter(id, i, c.title, c.body.length, start).also { start += c.body.length }
+            }
+            db.chapters().insertAll(rows)
+
+            var coverPath: String? = null
+            parsed.cover?.let { bytes ->
+                // downscale large covers to keep the shelf smooth
+                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                if (opts.outWidth > 0) {
+                    var sample = 1
+                    while (opts.outWidth / (sample * 2) >= 360) sample *= 2
+                    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+                    if (bmp != null) {
+                        val f = File(dir, "cover.jpg")
+                        f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, it) }
+                        coverPath = f.absolutePath
                     }
                 }
-                val book = db.books().get(id)!!.copy(
-                    chapterCount = rows.size, totalChars = start, coverPath = coverPath, ready = true
-                )
-                db.books().update(book)
-                Result.Ok(book)
-            } catch (e: Throwable) {
-                db.books().delete(id)
-                storage.deleteBook(id)
-                Result.Fail("导入失败：${e.message ?: e.javaClass.simpleName}")
             }
+            val book = db.books().get(id)!!.copy(
+                chapterCount = rows.size, totalChars = start, coverPath = coverPath, ready = true
+            )
+            db.books().update(book)
+            return Result.Ok(book)
+        } catch (e: Throwable) {
+            db.books().delete(id)
+            storage.deleteBook(id)
+            return Result.Fail("导入失败：${e.message ?: e.javaClass.simpleName}")
         }
     }
 

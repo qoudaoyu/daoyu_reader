@@ -50,7 +50,7 @@ class ScreenshotTest {
 
     @Test fun shelf() {
         importSamples()
-        rule.setContent { DaoyuTheme(dark = false) { ShelfScreen({}, {}, {}) } }
+        rule.setContent { DaoyuTheme(dark = false) { ShelfScreen({}, {}, {}, {}) } }
         shot("1_shelf")
     }
 
@@ -72,6 +72,32 @@ class ScreenshotTest {
         shot("5_reader_night_serif")
         rule.onRoot().performTouchInput { swipeLeft() }
         shot("6_reader_page2")
+    }
+
+    @Test fun bookSources() {
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SearchScreen({}, {}, {}, {}) } }
+        shot("13_search")
+    }
+
+    @Test fun webImport() {
+        com.daoyu.tingshu.source.SavedSites.add(App.instance, "Project Gutenberg", "https://www.gutenberg.org/")
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.WebImportScreen({}, {}) } }
+        shot("16_web_import")
+    }
+
+    @Test fun bookSourceList() {
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SourcesScreen({}, {}, {}) } }
+        shot("14_sources")
+    }
+
+    @Test fun bookSourceAi() {
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SourceAiScreen({}, {}) } }
+        shot("16_source_ai")
+    }
+
+    @Test fun bookSourceEdit() {
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SourceEditScreen(com.daoyu.tingshu.source.Sources.builtin[0].bookSourceUrl, {}) } }
+        shot("15_source_edit")
     }
 
     @Test fun settings() {
@@ -100,6 +126,7 @@ class ListenPipelineTest {
         val body0 = app.storage.readChapter(book.id, 0)
         println("debug: id=${book.id} body0.len=${body0.length} chapters=${runBlocking { app.db.chapters().list(book.id).size }} segs=${com.daoyu.tingshu.tts.Segmenter.split(0, body0, 0, 150).size}")
         app.tts.clearCache()
+        app.tts.skipPlaybackForTest = true
         val msgs = java.util.Collections.synchronizedList(ArrayList<String>())
         val job = kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.Unconfined) { app.tts.messages.collect { msgs.add(it) } }
         app.tts.start(book, 0, 0)
@@ -109,7 +136,7 @@ class ListenPipelineTest {
             org.robolectric.shadows.ShadowLooper.idleMainLooper(); Thread.sleep(100)
         }
         val secs = (System.currentTimeMillis() - t0) / 1000.0
-        // Robolectric's MediaPlayer cannot decode audio, so each synthesized segment "plays" instantly;
+        // Robolectric's MediaPlayer cannot decode audio, so each synthesized segment "plays" instantly (skipPlaybackForTest);
         // reaching the end without any engine error means every segment was synthesized by Edge.
         println("pipeline finished in ${secs}s, messages=$msgs, engine=${app.tts.state.value.engine}")
         job.cancel()

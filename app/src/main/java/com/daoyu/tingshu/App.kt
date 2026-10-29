@@ -8,6 +8,8 @@ import com.daoyu.tingshu.data.BookImporter
 import com.daoyu.tingshu.data.BookStorage
 import com.daoyu.tingshu.data.SecureKeys
 import com.daoyu.tingshu.data.SettingsStore
+import com.daoyu.tingshu.source.SourceDownloads
+import com.daoyu.tingshu.source.SourceRepo
 import com.daoyu.tingshu.tts.TtsController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +24,8 @@ class App : Application() {
     lateinit var settings: SettingsStore; private set
     lateinit var keys: SecureKeys; private set
     lateinit var tts: TtsController; private set
+    val sources by lazy { SourceRepo(this) }
+    val sourceDownloads by lazy { SourceDownloads(appScope, importer, storage) }
     val director by lazy { com.daoyu.tingshu.drama.DramaDirector() }
 
     override fun onCreate() {
@@ -37,8 +41,13 @@ class App : Application() {
         // 1.0.3 shipped "Elias" (a female voice) as the default narrator labelled male; move users to Vincent once
         appScope.launch(Dispatchers.IO) {
             if (!settings.tts.value.directorChecked) settings.updateTts {
-                if (it.directorModel == "qwen-plus") it.copy(directorModel = "qwen3-max", directorInPrice = 2.5f, directorOutPrice = 10f, directorChecked = true)
+                if (it.directorModel == "qwen-plus") it.copy(directorModel = "qwen3.8-max", directorInPrice = 12f, directorOutPrice = 36f, directorChecked = true)
                 else it.copy(directorChecked = true)
+            }
+            // qwen3-max no longer exists on Aliyun; its users move to the current Max once
+            if (!settings.tts.value.director38Checked) settings.updateTts {
+                if (it.directorModel == "qwen3-max") it.copy(directorModel = "qwen3.8-max", directorInPrice = 12f, directorOutPrice = 36f, director38Checked = true)
+                else it.copy(director38Checked = true)
             }
             if (!settings.tts.value.qwenVoiceChecked) settings.updateTts {
                 it.copy(qwenVoice = if (it.qwenVoice == "Elias") "Vincent" else it.qwenVoice, qwenVoiceChecked = true)

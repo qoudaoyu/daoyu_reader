@@ -1,6 +1,6 @@
 # 刀鱼听书 · 开发者说明
 
-> 适用版本：1.3.5（versionCode 13）。本文写给接手这个项目的开发者，介绍怎么构建和签名、代码结构、各模块怎么配合、接入的每个云服务有哪些坑，以及做过哪些实测、得出了哪些结论。最终用户看的说明在根目录 `README.md`。
+> 适用版本：1.4.8（versionCode 28）。本文写给接手这个项目的开发者，介绍怎么构建和签名、代码结构、各模块怎么配合、接入的每个云服务有哪些坑，以及做过哪些实测、得出了哪些结论。最终用户看的说明在根目录 `README.md`。
 
 ---
 
@@ -58,7 +58,7 @@ export ANDROID_HOME=/path/to/android-sdk     # 或者建一个 local.properties 
 ```
 app/src/main/java/com/daoyu/tingshu/
 ├── App.kt                 Application：全局单例（db / storage / importer / settings / keys / tts / director）+ 一次性迁移
-├── MainActivity.kt        导航（shelf / reader/{id} / cast/{id} / transfer / settings）、外部打开文件、音量键
+├── MainActivity.kt        导航（shelf / reader/{id} / cast/{id} / transfer / search / sources / sourceEdit / settings）、外部打开文件、音量键
 ├── data/
 │   ├── Entities.kt        Room 实体：Book / Chapter / Bookmark / TtsUsage
 │   ├── AppDatabase.kt     DAO + 数据库（version 3，含 1→2、2→3 迁移）
@@ -75,6 +75,17 @@ app/src/main/java/com/daoyu/tingshu/
 │   ├── ReaderScreen.kt    阅读页：菜单、目录、长按菜单（从这里听 / 书签 / 改说话人 / 重新合成）
 │   └── ListenPanel.kt     听书面板：模式（单人/多角色）、引擎、音色、语速、定时
 ├── shelf/ShelfScreen.kt   书架
+├── source/                书源搜书（见 §5 末尾）
+│   ├── BookSource.kt      书源数据结构（字段名照搬阅读/Legado）、JSON 导入导出、内置示例（古腾堡）
+│   ├── RuleEngine.kt      规则求值：CSS / Legado 默认语法 / JSONPath / XPath，|| && ## {{}}
+│   ├── SourceClient.kt    请求（搜索地址模板、POST、GBK、请求头）+ 搜索 / 详情 / 目录 / 正文 / 文件下载
+│   ├── SourceDownloads.kt 下载任务（app 作用域，离开页面不中断），完成后交给 BookImporter
+│   ├── SourceRepo.kt      书源存储 filesDir/book_sources.json
+│   ├── RuleWriter.kt      AI 添加书源：首页找搜索表单 → 精简 HTML 交给千问写规则 → 用 SourceClient 实跑校验，失败原因回传重写（每步 3 次）
+│   ├── SourceAiScreen.kt  AI 添加书源页面
+│   ├── SearchScreen.kt    搜书页 + 下载进度
+│   ├── WebImportScreen.kt 网页导入：WebView 浏览，拦截下载（带 Cookie / UA）交给 SourceDownloads.downloadWeb
+│   └── SourcesScreen.kt   书源列表、粘贴导入、编辑页（含测试；失败时用 SourceClient.log / lastPage 列出网站实际返回的内容；SourceClient 的 SiteCookies 拦截器在内存里保存网站 Cookie，和书源请求头里的 Cookie 合并）
 ├── transfer/
 │   ├── TransferServer.kt  NanoHTTPD：GET / ；GET /api/books ；POST /api/upload ；DELETE /api/books/{id} ；GET /api/books/{id}/download
 │   └── TransferScreen.kt  显示局域网地址和二维码
@@ -124,6 +135,11 @@ app/src/main/assets/
 - **偏移约定**：书里所有位置都用"章节号 + 章内正文字符偏移"表示。分页、高亮、书签、听书进度、角色分析结果都基于这个约定，改动时务必保持一致。
 - **设置**：`ReaderSettings` 和 `TtsSettings` 两个 data class，整体序列化成 JSON 存进 DataStore。新增字段只要给默认值就能兼容旧数据。需要一次性迁移旧值时，在 `App.kt` 里加一个 `xxxChecked` 标志，参照 `qwenVoiceChecked` 和 `directorChecked`。
 - **API Key**：`SecureKeys` 用 EncryptedSharedPreferences 保存，字段有 cosy（阿里云，CosyVoice/千问/百炼共用）、gemini、volc（火山引擎）、grok。**Key 绝不写进代码或 APK**，每次出包前都要扫一遍（见 §10）。
+- **书源**：存在 `filesDir/book_sources.json`（Legado 风格的 JSON 数组），不进数据库，所以加字段不需要 Room 迁移，只要给默认值。第一次打开时写入内置示例。
+  - 逐章下载的书：章节直接按目录拆好交给 `BookImporter.importParsed`，不经过 `TxtParser` 的标题识别；同时把合成的 TXT 存成 `source.txt`，WiFi 传书页可以下载。
+  - 文件下载的书：按 Content-Disposition、URL、Content-Type、zip 魔数判断 TXT / EPUB，再走普通的 `importFile`。
+  - 下载在 App 作用域里跑，没有前台服务；逐章下载 4 并发、每章重试 3 次，失败的章节写"（本章下载失败）"。
+  - 不支持 JS 规则（Legado 的 `<js>`、`@js:`），这类书源在列表里标红提示。
 - **音频缓存**：`cacheDir/tts/`，文件名是"引擎 + 音色参数 + 文本"的 SHA-1。超过 400 MB 时按最近使用清理到 300 MB。重听不重复收费，用的就是这个缓存。
 
 ---
@@ -150,8 +166,12 @@ start(book, ch, offset)
   `TtsException(skipEngine=true)` 表示 Key 无效或额度用完，本次听书期间直接跳过该引擎。达到月用量上限也会触发降级。每个提示通过 `notifyOnce` 只弹一次。
 - **跳转**：`jump(index)` 会取消生产者和播放器，从当前句重新切段。切换引擎、模式、音色或语速时都走这个函数，所以"随时切换"不会丢进度。
 - **多角色合成**（`synthesizeDrama`）：
-  - 对白：豆包 → 千问 → Edge（按性别选男/女声）
-  - 旁白：Edge → 系统 TTS
+  - 对白：用该角色**已保存**在 `cast.json` 里的音色（豆包，或没有豆包 Key 时用千问）；没有千问音色的配角按性别用 Edge。
+  - 旁白：Edge。
+  - **不做跨引擎、跨音色的自动降级**（1.3.6 起，用户确认的规则）：合成失败先重试两次（Key 无效、额度用完不重试），仍失败就在这一句暂停并提示原因。用户点播放重试原音色，或去角色表换音色（换音色会 `jump` 重新合成，旧的预取结果作废）。
+  - 新角色第一次开口前先 `ensureDoubaoVoices` 选好并保存音色，保存失败就暂停，不用临时音色。自动挑选过的音色不会再被自动替换。
+  - `cast.json` 先写临时文件再改名替换；读不出来时另存为 `cast.json.broken` 并提示，不会悄悄覆盖。
+  - 播放器打不开某段音频时（缓存损坏等），删掉重新合成一次；还不行就暂停，不跳过这一句。
   - 缓存键前缀：`db|`（豆包）、`dq|`（千问）、`de|`（Edge）
 - **测试钩子**（`internal`）：`onPlay`（记录每段实际播放的音频）、`freeVoicesForTest`（对白也用免费的 Edge，测节奏时不花钱）。
 
@@ -164,7 +184,7 @@ start(book, ch, offset)
 1. **找引号**：`QuoteFinder.find` 找出 “” 「」 『』 "" 引号（不跨行）。`isEmbedded` 把句中嵌入的强调词、牌匾、俗语（如 所谓的“天才”）直接判给旁白，不送去分析。
 2. **切段**：`DramaDirector.splitParts` 按段落把一章切成小段，每段最多 30 句对白（`PART_QUOTES`）、3000 字（`PART_CHARS`）。第二段起会带上前文约 400 字，标明"仅供理解，不用标注"。
 3. **并行分析**：每段调一次大模型（`callLlm`，流式 SSE）。
-   - 提示词要求返回 `characters`（标准名、别称、性别、年龄、嗓音描述）和紧凑格式的 `lines`：`[编号, 引号内前4字, 说话人, 语气]`。
+   - 提示词要求返回 `characters`（标准名、别称、性别、年龄、嗓音描述）和 `lines`：`{"id","head","speaker","emotion","intensity"}`。1.3.11 之前用数组 `[编号, 前4字, 说话人, 语气, 强度]`，qwen3.8-max 偶尔整段漏掉说话人一栏（语气错位成说话人，整段变路人）；现在改成带字段名的对象，解析仍兼容数组。一段回复里超过三成的说话人缺失或对不上角色表时重问一次，第二次仍不行，缺的句子按"某某道"、冒号前的名字和对话轮流推断。
    - 规则写在提示词里：先看"某某道"这类提示语；没提示语时按对话双方轮流推断；动作描写里出现的人不一定是说话人；心里话算该角色的；无名人物填"路人"；非对白填"旁白"。
 4. **对齐**：模型返回的编号不一定可靠，所以用"前 4 字"核对。处理了模型多抄到引号外的字、抄错一两个字的情况，见 `matches` / `loose`。没被覆盖到的引号一律判为"路人"（由旁白声音读）。
 5. **合入角色表**：新角色按"标准名 + 别称"合并进 `cast.json`，同时统计每个角色的台词句数。
@@ -181,12 +201,13 @@ start(book, ch, offset)
 
 ### 7.3 模型与审核兜底
 
-- **默认模型 `qwen3-max`**（阿里云百炼，与 CosyVoice 共用 Key）。设置里还可以选 `qwen-flash`（省钱）和 Grok。
+- **默认模型 `qwen3.8-max`**（阿里云百炼，与 CosyVoice 共用 Key；`qwen3-max` 已于 2026-10 前下线，1.3.6 起一次性迁移）。设置里还可以选 `qwen-flash`（省钱）和 Grok。
 - **流式调用**：大章节一次性返回要 2 分钟以上，会撞上 OkHttp 90 秒的读超时，导致整章失败。这就是 1.3.3 之前"章节之间要等几分钟"的根源。改成 SSE 流式之后，只要还在持续收数据就不会超时。
 - **阿里云内容审核误拦**：错误码 `data_inspection_failed`，提示 "Input data may contain inappropriate content"，程序里抛 `ContentBlocked`。普通网文也会触发。处理顺序（`analyseRobust`）：
   1. 如果填了 Grok Key 且开着"改用 Grok"开关，整段交给 Grok（`grok-4.20-0309-non-reasoning`，api.x.ai，需要代理）。
   2. Grok 不可用时，对半拆开重试（不带前文），一直拆到 ≤1 句或 <150 字。
   3. 仍被拦的句子用 `ruleBased` 规则判断：在引号前后 30 字内找已知角色名 + 说话动词。
+- **千问本身出错时**（模型下线、额度用完、连续超时、返回内容坏掉，重试一次仍失败）：同样由 Grok 接手这一段（受同一个开关控制，需代理），并提示一次原因；Grok 也不行时这一章照旧退回旁白朗读。测试用 `SIM_QWEN_DOWN=1` 模拟。
 - **Grok 当主模型时**：如果连不上（`GrokUnreachable`，多半是没开代理），10 分钟内改用千问 Max，并提示一次。
 - **测试钩子**：`onAnalysed`、`onReply`（导出原始提示词和回复）、`simulateBlock`（模拟审核拦截）、`simulateGrokDown`。
 
@@ -206,7 +227,7 @@ start(book, ch, offset)
 | 通义千问 Qwen3-TTS | 单人；多角色备选 | `…/aigc/multimodal-generation/generation`；带指令时用 `qwen3-tts-instruct-flash`，不带用 `qwen3-tts-flash`，设计音色用 `qwen3-tts-vd-2026-01-26` | 0.8 元/万计费字符（约 1.5 元/万字） | 音色性别不能按名字猜：Elias"墨讲师"其实是女声。方言音色不支持指令 |
 | 千问声音设计 | 多角色定制音色 | `…/audio/tts/customization`，model `qwen-voice-design` | 0.2 元/个 | 描述里写"少年音"的男声有些句子会听着像女声，所以男声固定"中低音"，并用试听片段测音高（男声 > 175 Hz 就重新设计）。设计出的音色**不接受**逐句指令 |
 | Google Gemini TTS | 单人（精品书） | Interactions API（`/v1beta/interactions`），风格放在 `speech_metadata.style`；2.x/3.1 模型走 generateContent | 3.8 Flash TTS 每百万音频 token 9 美元（约 3.8 元/万字），2027 年起翻倍 | **把风格写进正文会被念出来**，必须走 speech_metadata。Tier 1 和 Tier 2 实际都限 100 次/天。国内需要代理 |
-| 豆包语音合成 2.0 | 多角色对白（默认） | `https://openspeech.bytedance.com/api/v3/tts/unidirectional`，请求头 `X-Api-Key` + `X-Api-Resource-Id: seed-tts-2.0`；返回逐行 JSON，里面是 base64 MP3 | 资源包约 2.8 元/万字 | 音色 ID 规律：`zh_{male\|female}_{拼音}_uranus_bigtts` 和 `ICL_uranus_zh_{male\|female}_{拼音}_tob`。语气指令放在 `additions.context_texts[0]`（不计费），**效果有限**，情绪主要由台词本身决定。`audio_params.emotion` 实测无效。写进正文的 `[#指令]` 会被念出来 |
+| 豆包语音合成 2.0 | 多角色对白（默认） | `https://openspeech.bytedance.com/api/v3/tts/unidirectional`，请求头 `X-Api-Key` + `X-Api-Resource-Id: seed-tts-2.0`；请求 `format: pcm`，返回逐行 JSON，里面是 base64 PCM，存成 WAV 前用 `Loudness.normalize` 拉到 -20 dBFS（同一句每次合成音量差 3～7 dB、音高差可达 30%，属服务端随机波动）。`context_texts` 里放别的角色台词会让声音向那句台词偏移，所以旁白不带上文、对白只带前面的旁白 | 资源包约 2.8 元/万字 | 音色 ID 规律：`zh_{male\|female}_{拼音}_uranus_bigtts` 和 `ICL_uranus_zh_{male\|female}_{拼音}_tob`。语气指令放在 `additions.context_texts[0]`（不计费），**效果有限**，情绪主要由台词本身决定。`audio_params.emotion` 实测无效。写进正文的 `[#指令]` 会被念出来 |
 | 阿里百炼大模型 | 角色分析 | OpenAI 兼容 `/compatible-mode/v1/chat/completions`，`response_format=json_object`，`enable_thinking=false`，`stream=true` | Max 2.5/10、Plus 0.8/2、Flash 0.15/1.5（元/百万 token，输入/输出） | 平台级输入审核会误拦，见 §7.3 |
 | xAI Grok | 角色分析（可选、兜底） | `https://api.x.ai/v1/chat/completions` | 1.25/2.5 美元/百万 token | 国内需要代理；连不上时快速失败并降级 |
 | 系统 TTS | 最后兜底 | Android TextToSpeech | 免费 | 部分 ColorOS 机型没装中文引擎 |
@@ -218,6 +239,7 @@ start(book, ch, offset)
 | 测试 | 类型 | 说明 |
 |---|---|---|
 | `ParserTest` | 离线 | TXT 编码识别、分章、标题，EPUB 解析 |
+| `BookSourceTest` | 离线 | 书源规则语法、Legado JSON 导入、古腾堡页面结构；用本地 NanoHTTPD 假站点跑通 GBK 逐章下载和 EPUB 文件下载到入库；AI 写规则的流程（假模型）。`ruleWriterLive` 让真千问读假站点写规则，需要 `COSY_KEY` + `RULEGEN_LIVE=1` |
 | `DramaSegmentTest` | 离线 | 多角色切段、嵌入引号判定、男声提示词、音高估计、豆包音色目录 |
 | `ScreenshotTest` | 离线 | Roborazzi 截图，输出到 `app/build/shots/` |
 | `EdgeLiveTest` | 在线 | Edge 合成，需要网络 |
@@ -233,9 +255,10 @@ COSY_KEY  GEMINI_KEY  VOLC_KEY  GROK_KEY     各家 API Key（只放环境变量
 DRAMA_RES=drama_trap.txt                     DramaLiveTest 用哪本测试书（默认 drama_book.txt）
 TTS_OUT=/path                                把实际播放的每段音频和 played.tsv 拷出来
 FREE_VOICES=1                                对白也用 Edge（不花豆包和千问的钱）
-DIRECTOR_MODEL=qwen3-max|qwen-flash|grok-…   临时指定分析模型
+DIRECTOR_MODEL=qwen3.8-max|qwen-plus|qwen-flash|grok-…   临时指定分析模型
 SIMULATE_BLOCK_B64=<base64(触发文本)>         模拟阿里云审核拦截（用 base64 是因为环境变量里的中文会被弄乱）
 SIM_GROK_DOWN=1                              模拟 Grok 连不上
+SIM_QWEN_DOWN=1                              模拟千问分析全部失败（检验 Grok 接手）
 DUMP_REPLY=/path                             导出每段的提示词和模型回复
 ```
 
@@ -282,6 +305,7 @@ DUMP_REPLY=/path                             导出每段的提示词和模型�
 - **审核兜底不精确**：没有 Grok 时，被拦的句子靠规则判断；找不到角色名的（例如只写"他冷笑道"）由旁白读。
 - **豆包语气指令效果有限**：如果想要更强的表演，可以考虑接 MiniMax Speech-2.8（可在百炼开通，同一个阿里云 Key），这个方案还没有做过实测对比。
 - **Edge 接口非官方**：失效时单人模式会降级到系统 TTS，多角色的旁白也会受影响。
+- **书源**：内置的古腾堡规则是按它的页面结构写的，开发环境连不上 gutenberg.org，没有在线实测过；网站改版后要调规则。逐章下载没有前台服务，下载很长的书时退到后台可能被系统杀掉。
 - **计划中的功能**：MOBI/AZW3（无 DRM）、离线语音模型、仿真翻页、上下滚动、笔记导出、阅读统计。
 - **代码层面**：`TtsController` 和 `DramaDirector` 都已有 700 行左右。继续扩展前，建议把"多角色合成"和"分析调度/审核兜底"拆成独立类。
 
