@@ -165,6 +165,10 @@ class BookSourceTest {
                 .also { it.addHeader("Content-Type", "text/html") }
             return when {
                 s.uri == "/api/search" -> newFixedLengthResponse(Response.Status.OK, "text/html", "<html><head><title>请先登录</title></head><body><p>登录后才能搜索</p><script>var x=1</script></body></html>")
+                s.uri == "/gate" -> if (s.headers["cookie"]?.contains("pass=1") == true)
+                    newFixedLengthResponse(Response.Status.OK, "application/json", """{"books":[{"title":"夜雨十年","href":"/book/9/","who":"${s.headers["cookie"]}"}]}""")
+                else newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "").also { it.addHeader("Location", "/gate"); it.addHeader("Set-Cookie", "pass=1; Path=/") }
+                s.uri == "/forever" -> newFixedLengthResponse(Response.Status.REDIRECT, "text/plain", "").also { it.addHeader("Location", "/forever") }
                 s.uri == "/noform" -> page("<h1>没有搜索框的首页</h1>")
                 s.uri == "/" -> page("""<h1>测试书城</h1><form action="/search" method="get"><input type="text" name="q"><button>搜索</button></form>""")
                 s.uri == "/search" -> page(if (URLDecoder.decode(s.queryParameterString?.substringAfter("q=") ?: "", "GBK") == "夜雨" || q.isNotEmpty())
@@ -390,5 +394,23 @@ class BookSourceTest {
             ruleSearch = SearchRule(bookList = "$.items[*]", name = "$.title"))
         assertTrue(c.search(wrongName, "山海").isEmpty())
         assertEquals("「结果列表」匹配到 1 个，其中 0 个取到了书名：「书名」$.title 不对", c.explainSearch(wrongName, c.lastPage!!))
+    }
+
+    @Test fun cookiesSurviveRedirects() = runBlocking {
+        val c = SourceClient()
+        val src = BookSource(
+            bookSourceUrl = base, header = """{"Cookie":"mine=a"}""", searchUrl = "/gate?q={{key}}",
+            ruleSearch = SearchRule(bookList = "$.books[*]", name = "$.title", bookUrl = "$.href", intro = "$.who"),
+        )
+        val res = c.search(src, "夜雨")
+        assertEquals("夜雨十年", res.single().name)
+        // the user's own Cookie header is kept alongside the one the site handed out
+        assertEquals("mine=a; pass=1", res.single().intro)
+        assertEquals(listOf("301 → /gate"), c.log.last().hops)
+
+        val loop = src.copy(searchUrl = "/forever?q={{key}}")
+        val e = runCatching { c.search(loop, "x") }.exceptionOrNull()
+        assertTrue("$e", e is com.daoyu.tingshu.source.SourceException && e.message!!.contains("一直在跳转"))
+        assertTrue(c.log.last().describe().contains("跳转 21 次"))
     }
 }

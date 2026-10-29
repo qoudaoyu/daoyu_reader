@@ -1,6 +1,6 @@
 # 刀鱼听书 · 开发者说明
 
-> 适用版本：1.4.4（versionCode 24）。本文写给接手这个项目的开发者，介绍怎么构建和签名、代码结构、各模块怎么配合、接入的每个云服务有哪些坑，以及做过哪些实测、得出了哪些结论。最终用户看的说明在根目录 `README.md`。
+> 适用版本：1.4.5（versionCode 25）。本文写给接手这个项目的开发者，介绍怎么构建和签名、代码结构、各模块怎么配合、接入的每个云服务有哪些坑，以及做过哪些实测、得出了哪些结论。最终用户看的说明在根目录 `README.md`。
 
 ---
 
@@ -84,7 +84,7 @@ app/src/main/java/com/daoyu/tingshu/
 │   ├── RuleWriter.kt      AI 添加书源：首页找搜索表单 → 精简 HTML 交给千问写规则 → 用 SourceClient 实跑校验，失败原因回传重写（每步 3 次）
 │   ├── SourceAiScreen.kt  AI 添加书源页面
 │   ├── SearchScreen.kt    搜书页 + 下载进度
-│   └── SourcesScreen.kt   书源列表、粘贴导入、编辑页（含测试；失败时用 SourceClient.log / lastPage 列出网站实际返回的内容）
+│   └── SourcesScreen.kt   书源列表、粘贴导入、编辑页（含测试；失败时用 SourceClient.log / lastPage 列出网站实际返回的内容；SourceClient 的 SiteCookies 拦截器在内存里保存网站 Cookie，和书源请求头里的 Cookie 合并）
 ├── transfer/
 │   ├── TransferServer.kt  NanoHTTPD：GET / ；GET /api/books ；POST /api/upload ；DELETE /api/books/{id} ；GET /api/books/{id}/download
 │   └── TransferScreen.kt  显示局域网地址和二维码

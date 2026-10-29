@@ -68,11 +68,17 @@ data class FetchRecord(
     val title: String,
     val preview: String,
     val error: String? = null,
+    /** Redirects on the way, as "302 → next url". */
+    val hops: List<String> = emptyList(),
 ) {
     fun describe(): String = buildString {
         append("$method $url\n")
         if (!body.isNullOrEmpty()) append("请求体：$body\n")
         if (headers.isNotEmpty()) append("请求头：" + headers.keys.joinToString("、") + "\n")
+        if (hops.isNotEmpty()) {
+            append("跳转 ${hops.size} 次：\n")
+            (if (hops.size > 6) hops.take(3) + "…" + hops.takeLast(3) else hops).forEach { append("   $it\n") }
+        }
         if (error != null) { append("没有连上：$error\n"); return@buildString }
         append("状态 $code · ${contentType.ifBlank { "未知类型" }} · ${size} 字节\n")
         if (finalUrl != url) append("跳转到：$finalUrl\n")
@@ -83,7 +89,7 @@ data class FetchRecord(
     companion object {
         const val PREVIEW = 400
 
-        fun of(spec: SourceClient.UrlSpec, code: Int, page: Page): FetchRecord {
+        fun of(spec: SourceClient.UrlSpec, code: Int, page: Page, hops: List<String>): FetchRecord {
             val text = runCatching { page.text }.getOrDefault("")
             val html = !page.isJson && text.trimStart().startsWith("<")
             val doc = if (html) runCatching { Jsoup.parse(text) }.getOrNull() else null
@@ -91,7 +97,7 @@ data class FetchRecord(
             val shown = doc?.body()?.text()?.ifBlank { null } ?: text
             return FetchRecord(
                 spec.method, spec.url, spec.body, spec.headers, code, page.url, page.contentType, page.bytes.size,
-                doc?.title().orEmpty(), shown.replace(Regex("\\s+"), " ").trim().take(PREVIEW),
+                doc?.title().orEmpty(), shown.replace(Regex("\\s+"), " ").trim().take(PREVIEW), hops = hops,
             )
         }
     }
@@ -145,17 +151,23 @@ class SourceClient(private val http: OkHttpClient = defaultClient) {
                 ?: if (body.trimStart().startsWith("{")) "application/json; charset=utf-8" else "application/x-www-form-urlencoded"
             rb.post(if (type.startsWith("application/x-www-form-urlencoded") && body.isEmpty()) FormBody.Builder().build() else body.toRequestBody(type.toMediaTypeOrNull()))
         }
+        val hops = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val traced = http.newBuilder().addNetworkInterceptor { chain ->
+            chain.proceed(chain.request()).also { r -> if (r.isRedirect) hops += "${r.code} → ${r.header("Location") ?: "?"}" }
+        }.build()
         val call = try {
-            http.newCall(rb.build()).execute()
+            traced.newCall(rb.build()).execute()
         } catch (e: java.io.IOException) {
-            synchronized(log) { log += FetchRecord(spec.method, spec.url, spec.body, spec.headers, 0, spec.url, "", 0, "", "", e.message ?: e.javaClass.simpleName) }
+            val msg = e.message ?: e.javaClass.simpleName
+            synchronized(log) { log += FetchRecord(spec.method, spec.url, spec.body, spec.headers, 0, spec.url, "", 0, "", "", msg, hops.toList()) }
+            if (msg.startsWith("Too many follow-up requests")) throw SourceException("网站一直在跳转（转了 ${hops.size} 次还没到头）：通常是要先登录或通过人机验证，或者网站不接受 App 发出的请求")
             throw e
         }
         call.use { resp ->
             val bytes = resp.body?.bytes() ?: ByteArray(0)
             val ct = resp.header("Content-Type") ?: ""
             val page = Page(resp.request.url.toString(), bytes, ct, spec.charset ?: resp.body?.contentType()?.charset()?.name())
-            synchronized(log) { log += FetchRecord.of(spec, resp.code, page) }
+            synchronized(log) { log += FetchRecord.of(spec, resp.code, page, hops.toList()) }
             lastPage = page
             if (!resp.isSuccessful) throw SourceException("网站返回 ${resp.code}：${spec.url}")
             page
@@ -315,7 +327,8 @@ class SourceClient(private val http: OkHttpClient = defaultClient) {
         const val MAX_CONTENT_PAGES = 20
 
         val defaultClient: OkHttpClient by lazy {
-            Http.client.newBuilder().readTimeout(30, TimeUnit.SECONDS).followRedirects(true).followSslRedirects(true).build()
+            Http.client.newBuilder().readTimeout(30, TimeUnit.SECONDS).followRedirects(true).followSslRedirects(true)
+                .addNetworkInterceptor(SiteCookies).build()
         }
 
         fun parseHeaders(s: String): Map<String, String> {
@@ -383,4 +396,33 @@ internal object Arith {
         }
         parseExpr().takeIf { i == s.length }
     }.getOrNull()
+}
+
+/**
+ * Keeps the cookies sites hand out (session ids, "you passed the check" markers) for as long as the app runs, the way
+ * a browser would; many sites redirect in circles until they get them back. Lives in a network interceptor rather
+ * than a CookieJar so a Cookie the user wrote into the source's headers is merged instead of replaced, and wins.
+ */
+internal object SiteCookies : okhttp3.Interceptor {
+    private val jar = mutableListOf<okhttp3.Cookie>()
+
+    override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
+        val req = chain.request()
+        val now = System.currentTimeMillis()
+        val stored = synchronized(jar) { jar.removeAll { it.expiresAt < now }; jar.filter { it.matches(req.url) } }
+        val own = req.header("Cookie").orEmpty()
+        val ownNames = own.split(';').map { it.substringBefore('=').trim() }.filter { it.isNotEmpty() }.toSet()
+        val merged = (listOf(own).filter { it.isNotBlank() } + stored.filter { it.name !in ownNames }.map { "${it.name}=${it.value}" }).joinToString("; ")
+        val resp = chain.proceed(if (merged.isEmpty()) req else req.newBuilder().header("Cookie", merged).build())
+        val fresh = okhttp3.Cookie.parseAll(req.url, resp.headers)
+        if (fresh.isNotEmpty()) synchronized(jar) {
+            for (c in fresh) {
+                jar.removeAll { it.name == c.name && it.domain == c.domain && it.path == c.path }
+                if (c.expiresAt >= now) jar += c
+            }
+        }
+        return resp
+    }
+
+    fun clear() = synchronized(jar) { jar.clear() }
 }
