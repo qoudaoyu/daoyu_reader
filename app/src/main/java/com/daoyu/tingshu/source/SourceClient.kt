@@ -110,8 +110,11 @@ class SourceClient(private val http: OkHttpClient = defaultClient) {
 
     suspend fun search(source: BookSource, key: String, page: Int = 1): List<SearchResult> {
         if (source.searchUrl.isBlank()) throw SourceException("「${source.bookSourceName}」没有填写搜索地址")
-        val p = fetch(buildUrl(source, source.searchUrl, key, page))
-        return parseSearch(source, p)
+        val first = parseSearch(source, fetch(buildUrl(source, source.searchUrl, key, page)))
+        if (first.isNotEmpty()) return first
+        // many sites (e.g. Gutenberg's Chinese classics) only list one script: retry in the other one
+        val other = ChineseScript.other(key) ?: return first
+        return parseSearch(source, fetch(buildUrl(source, source.searchUrl, other, page)))
     }
 
     fun parseSearch(source: BookSource, p: Page): List<SearchResult> {
@@ -266,6 +269,20 @@ class SourceClient(private val http: OkHttpClient = defaultClient) {
             if (ct.startsWith("text/plain")) return "txt"
             return null
         }
+    }
+}
+
+/** Simplified ↔ traditional via Android's ICU transliterators (API 29+); null when nothing changes or ICU lacks them. */
+internal object ChineseScript {
+    private val toHant by lazy { runCatching { android.icu.text.Transliterator.getInstance("Hans-Hant") }.getOrNull() }
+    private val toHans by lazy { runCatching { android.icu.text.Transliterator.getInstance("Hant-Hans") }.getOrNull() }
+
+    fun other(s: String): String? {
+        if (android.os.Build.VERSION.SDK_INT < 29 || s.none { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.HAN }) return null
+        val hant = runCatching { toHant?.transliterate(s) }.getOrNull()
+        if (hant != null && hant != s) return hant
+        val hans = runCatching { toHans?.transliterate(s) }.getOrNull()
+        return hans?.takeIf { it != s }
     }
 }
 

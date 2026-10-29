@@ -108,6 +108,13 @@ class BookSourceTest {
         assertEquals("https://other.org/a", c.buildUrl(src, "https://other.org/a").url)
     }
 
+    @Test fun scriptFallback() {
+        val cs = com.daoyu.tingshu.source.ChineseScript
+        assertEquals("紅樓夢", cs.other("红楼梦"))
+        assertEquals("红楼梦", cs.other("紅樓夢"))
+        assertEquals(null, cs.other("Pride and Prejudice"))
+    }
+
     @Test fun legadoJsonImport() {
         val legado = """[{"bookSourceName":"某站","bookSourceUrl":"https://a.example","bookSourceType":0,"enabled":true,"searchUrl":"/s?q={{key}}",
             "ruleSearch":{"bookList":"class.item","name":"tag.h3@text","bookUrl":"tag.a@href","checkKeyWord":"我的"},
