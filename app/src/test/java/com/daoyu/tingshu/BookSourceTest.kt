@@ -433,4 +433,16 @@ class BookSourceTest {
         assertTrue("$e", e is com.daoyu.tingshu.source.SourceException && e.message!!.contains("一直在跳转"))
         assertTrue(c.log.last().describe().contains("跳转 21 次"))
     }
+
+    @Test fun savedSites() {
+        val c = App.instance
+        val S = com.daoyu.tingshu.source.SavedSites
+        S.add(c, "古腾堡\t计划", "https://www.gutenberg.org/")
+        S.add(c, "", "https://example.com/a")
+        S.add(c, "古腾堡（新）", "https://www.gutenberg.org/")
+        assertEquals(listOf(com.daoyu.tingshu.source.SavedSites.Site("", "https://example.com/a"), com.daoyu.tingshu.source.SavedSites.Site("古腾堡（新）", "https://www.gutenberg.org/")), S.load(c))
+        S.remove(c, "https://example.com/a")
+        assertEquals(listOf("https://www.gutenberg.org/"), S.load(c).map { it.url })
+        S.remove(c, "https://www.gutenberg.org/")
+    }
 }

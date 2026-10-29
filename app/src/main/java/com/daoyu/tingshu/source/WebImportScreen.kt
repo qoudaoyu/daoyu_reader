@@ -30,6 +30,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -78,6 +80,7 @@ fun WebImportScreen(onBack: () -> Unit, onOpenBook: (Long) -> Unit) {
     val focus = LocalFocusManager.current
     val tasks by app.sourceDownloads.tasks.collectAsState()
     var recent by remember { mutableStateOf(RecentSites.load(context)) }
+    var saved by remember { mutableStateOf(SavedSites.load(context)) }
     var address by remember { mutableStateOf("") }
     var pageTitle by remember { mutableStateOf("") }
     var progress by remember { mutableStateOf(100) }
@@ -106,7 +109,19 @@ fun WebImportScreen(onBack: () -> Unit, onOpenBook: (Long) -> Unit) {
             TopAppBar(
                 title = { Text(if (showing) pageTitle.ifBlank { "网页导入" } else "网页导入", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") } },
-                actions = { if (showing) IconButton(onClick = { web?.reload() }) { Icon(Icons.Default.Refresh, "刷新") } },
+                actions = {
+                    if (showing) {
+                        val here = web?.url ?: address
+                        val isSaved = saved.any { it.url == here }
+                        IconButton(onClick = {
+                            saved = if (isSaved) SavedSites.remove(context, here) else SavedSites.add(context, pageTitle, here)
+                            Toast.makeText(context, if (isSaved) "已取消收藏" else "已收藏，下次在网页导入首页点一下就能打开", Toast.LENGTH_SHORT).show()
+                        }) {
+                            if (isSaved) Icon(Icons.Default.Star, "取消收藏", tint = Palette.Gold) else Icon(Icons.Default.StarBorder, "收藏")
+                        }
+                        IconButton(onClick = { web?.reload() }) { Icon(Icons.Default.Refresh, "刷新") }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
         }
@@ -186,7 +201,12 @@ fun WebImportScreen(onBack: () -> Unit, onOpenBook: (Long) -> Unit) {
                     onRelease = { if (web === it) web = null; it.destroy() },
                     modifier = Modifier.fillMaxSize()
                 )
-                else StartPage(recent, onPick = { go(it) }, onRemove = { recent = RecentSites.remove(context, it) })
+                else StartPage(
+                    saved, recent, onPick = { go(it) },
+                    onUnsave = { saved = SavedSites.remove(context, it) },
+                    onSave = { saved = SavedSites.add(context, "", it) },
+                    onRemove = { recent = RecentSites.remove(context, it) },
+                )
             }
 
             // downloads started from this page
@@ -199,7 +219,10 @@ fun WebImportScreen(onBack: () -> Unit, onOpenBook: (Long) -> Unit) {
 }
 
 @Composable
-private fun StartPage(recent: List<String>, onPick: (String) -> Unit, onRemove: (String) -> Unit) {
+private fun StartPage(
+    saved: List<SavedSites.Site>, recent: List<String>, onPick: (String) -> Unit,
+    onUnsave: (String) -> Unit, onSave: (String) -> Unit, onRemove: (String) -> Unit,
+) {
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
@@ -207,18 +230,60 @@ private fun StartPage(recent: List<String>, onPick: (String) -> Unit, onRemove: 
                     "需要登录的网站，在这里登录一次就会记住。请只下载你有权获取的正版或公版书。",
                 fontSize = 13.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            if (recent.isNotEmpty()) Text("最近访问", fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
-            recent.forEach { url ->
-                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth().clickable { onPick(url) }) {
-                    Row(Modifier.padding(start = 14.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(url.substringAfter("://").trimEnd('/'), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                        IconButton(onClick = { onRemove(url) }) { Icon(Icons.Default.Close, "删除", Modifier.padding(2.dp)) }
-                    }
+            if (saved.isNotEmpty()) Text("收藏", fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
+            saved.forEach { site ->
+                SiteRow(site.title.ifBlank { site.url.short() }, if (site.title.isBlank()) null else site.url.short(), onClick = { onPick(site.url) }) {
+                    IconButton(onClick = { onUnsave(site.url) }) { Icon(Icons.Default.Star, "取消收藏", tint = Palette.Gold) }
                 }
             }
+            val unsaved = recent.filter { r -> saved.none { it.url == r } }
+            if (unsaved.isNotEmpty()) Text("最近访问", fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
+            unsaved.forEach { url ->
+                SiteRow(url.short(), null, onClick = { onPick(url) }) {
+                    IconButton(onClick = { onSave(url) }) { Icon(Icons.Default.StarBorder, "收藏") }
+                    IconButton(onClick = { onRemove(url) }) { Icon(Icons.Default.Close, "删除") }
+                }
+            }
+            if (saved.isEmpty()) Text("打开网页后点右上角的 ☆ 就能收藏，下次在这里点一下直接打开。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.heightIn(min = 8.dp))
         }
     }
+}
+
+private fun String.short() = substringAfter("://").removePrefix("www.").trimEnd('/')
+
+@Composable
+private fun SiteRow(title: String, sub: String?, onClick: () -> Unit, actions: @Composable () -> Unit) {
+    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+        Row(Modifier.padding(start = 14.dp).heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+                Text(title, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                sub?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
+            actions()
+        }
+    }
+}
+
+/** Pages the user starred in 网页导入, in the order they were saved; stored as "title\turl" lines. */
+internal object SavedSites {
+    data class Site(val title: String, val url: String)
+
+    private const val KEY = "web_import_saved"
+    private fun prefs(c: Context) = c.getSharedPreferences("web_import", Context.MODE_PRIVATE)
+
+    fun load(c: Context): List<Site> = prefs(c).getString(KEY, "")!!.split('\n').filter { it.isNotBlank() }.map {
+        if ('\t' in it) Site(it.substringBefore('\t'), it.substringAfter('\t')) else Site("", it)
+    }
+
+    private fun store(c: Context, list: List<Site>): List<Site> {
+        prefs(c).edit().putString(KEY, list.joinToString("\n") { it.title.replace(Regex("[\t\n]"), " ").trim() + "\t" + it.url }).apply()
+        return list
+    }
+
+    fun add(c: Context, title: String, url: String): List<Site> = store(c, load(c).filter { it.url != url } + Site(title.trim(), url))
+
+    fun remove(c: Context, url: String): List<Site> = store(c, load(c).filter { it.url != url })
 }
 
 /** Sites opened in 网页导入, newest first. */

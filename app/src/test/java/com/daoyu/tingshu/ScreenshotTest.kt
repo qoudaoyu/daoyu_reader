@@ -80,6 +80,7 @@ class ScreenshotTest {
     }
 
     @Test fun webImport() {
+        com.daoyu.tingshu.source.SavedSites.add(App.instance, "Project Gutenberg", "https://www.gutenberg.org/")
         rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.WebImportScreen({}, {}) } }
         shot("16_web_import")
     }
