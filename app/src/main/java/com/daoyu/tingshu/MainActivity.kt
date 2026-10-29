@@ -81,7 +81,10 @@ class MainActivity : ComponentActivity() {
                     }
                     composable("transfer") { TransferScreen(onBack = { nav.popBackStack() }) }
                     composable("search") {
-                        com.daoyu.tingshu.source.SearchScreen(onBack = { nav.popBackStack() }, onSources = { nav.navigate("sources") }, onOpenBook = { openReader(nav, it) })
+                        com.daoyu.tingshu.source.SearchScreen(onBack = { nav.popBackStack() }, onSources = { nav.navigate("sources") }, onWeb = { nav.navigate("webimport") }, onOpenBook = { openReader(nav, it) })
+                    }
+                    composable("webimport") {
+                        com.daoyu.tingshu.source.WebImportScreen(onBack = { nav.popBackStack() }, onOpenBook = { openReader(nav, it) })
                     }
                     composable("sources") {
                         com.daoyu.tingshu.source.SourcesScreen(onBack = { nav.popBackStack() }, onEdit = { url -> nav.navigate("sourceEdit?url=" + android.net.Uri.encode(url ?: "")) }, onAi = { nav.navigate("sourceAi") })
