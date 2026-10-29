@@ -1,6 +1,6 @@
 # 刀鱼听书 · 开发者说明
 
-> 适用版本：1.4.1（versionCode 21）。本文写给接手这个项目的开发者，介绍怎么构建和签名、代码结构、各模块怎么配合、接入的每个云服务有哪些坑，以及做过哪些实测、得出了哪些结论。最终用户看的说明在根目录 `README.md`。
+> 适用版本：1.4.2（versionCode 22）。本文写给接手这个项目的开发者，介绍怎么构建和签名、代码结构、各模块怎么配合、接入的每个云服务有哪些坑，以及做过哪些实测、得出了哪些结论。最终用户看的说明在根目录 `README.md`。
 
 ---
 
@@ -82,6 +82,7 @@ app/src/main/java/com/daoyu/tingshu/
 │   ├── SourceDownloads.kt 下载任务（app 作用域，离开页面不中断），完成后交给 BookImporter
 │   ├── SourceRepo.kt      书源存储 filesDir/book_sources.json
 │   ├── SearchScreen.kt    搜书页 + 下载进度
+│   ├── WebImportScreen.kt 网页导入：WebView 浏览，拦截下载（带 Cookie / UA）交给 SourceDownloads.downloadWeb
 │   └── SourcesScreen.kt   书源列表、粘贴导入、编辑页（含测试）
 ├── transfer/
 │   ├── TransferServer.kt  NanoHTTPD：GET / ；GET /api/books ；POST /api/upload ；DELETE /api/books/{id} ；GET /api/books/{id}/download

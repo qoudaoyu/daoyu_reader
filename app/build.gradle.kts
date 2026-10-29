@@ -21,8 +21,8 @@ android {
         applicationId = "com.daoyu.tingshu"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "1.4.1"
+        versionCode = 22
+        versionName = "1.4.2"
     }
 
     // Release signing reads ../keystore.properties (not included in this archive):

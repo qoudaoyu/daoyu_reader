@@ -75,8 +75,13 @@ class ScreenshotTest {
     }
 
     @Test fun bookSources() {
-        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SearchScreen({}, {}, {}) } }
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.SearchScreen({}, {}, {}, {}) } }
         shot("13_search")
+    }
+
+    @Test fun webImport() {
+        rule.setContent { DaoyuTheme(dark = false) { com.daoyu.tingshu.source.WebImportScreen({}, {}) } }
+        shot("16_web_import")
     }
 
     @Test fun bookSourceList() {
