@@ -18,6 +18,7 @@ data class CastMember(
     val designFailed: Boolean = false,  // last design attempt failed; retried only on request
     val doubaoVoice: String = "",       // 豆包 2.0 voice id ("" = not chosen yet)
     val doubaoUser: Boolean = false,    // doubao voice chosen by the user
+    val volume: Int = 0,                // the user's loudness correction for this character, dB (-6 … +9)
 )
 
 @Serializable

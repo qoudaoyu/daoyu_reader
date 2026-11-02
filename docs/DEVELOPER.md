@@ -1,6 +1,6 @@
 # 刀鱼听书 · 开发者说明
 
-> 适用版本：1.4.8（versionCode 28）。本文写给接手这个项目的开发者，介绍怎么构建和签名、代码结构、各模块怎么配合、接入的每个云服务有哪些坑，以及做过哪些实测、得出了哪些结论。最终用户看的说明在根目录 `README.md`。
+> 适用版本：1.4.9（versionCode 29）。本文写给接手这个项目的开发者，介绍怎么构建和签名、代码结构、各模块怎么配合、接入的每个云服务有哪些坑，以及做过哪些实测、得出了哪些结论。最终用户看的说明在根目录 `README.md`。
 
 ---
 
@@ -99,6 +99,8 @@ app/src/main/java/com/daoyu/tingshu/
 │   ├── GeminiTts.kt       Gemini TTS（Interactions API + speech_metadata）
 │   ├── DoubaoTts.kt       豆包语音合成 2.0（HTTP 单向流式）——只用于多角色对白
 │   ├── SystemTts.kt       系统 TTS，最后一道兜底
+│   ├── Loudness.kt        响度（BS.1770 LUFS）：豆包 / 千问音频拉平，外放时低沉嗓音的补偿量
+│   ├── PlaybackGain.kt    播放时的音量修正：判断是否机身外放，LoudnessEnhancer / setVolume
 │   ├── Segmenter.kt       单人分句；多角色时把引号对白拆出来（splitDrama）
 │   ├── TtsController.kt   听书流水线核心（见 §6）
 │   └── TtsService.kt      前台服务、MediaSession、通知栏和线控
@@ -173,6 +175,10 @@ start(book, ch, offset)
   - `cast.json` 先写临时文件再改名替换；读不出来时另存为 `cast.json.broken` 并提示，不会悄悄覆盖。
   - 播放器打不开某段音频时（缓存损坏等），删掉重新合成一次；还不行就暂停，不跳过这一句。
   - 缓存键前缀：`db|`（豆包）、`dq|`（千问）、`de|`（Edge）
+- **音量**（1.4.9，`Loudness.kt` / `PlaybackGain.kt`）：
+  - 豆包和千问的每段音频在写进缓存前用 BS.1770 K 加权响度（LUFS）拉到 -21 LUFS（增益 0.25～4 倍，不削波）。1.3.10 用的是不加权的 RMS，同一句话在听感上仍有 1～4 dB 的差。
+  - 手机外放补偿：手机喇叭基本发不出 500 Hz 以下的声音。豆包音色目录实测，同样响度的一句话，经过 500 Hz 高通后响度下降 0～12 dB（中位数 5.5）；"小侯爷""儒雅君子"这类低沉男声掉 7～10 dB，女声多数只掉 2～4 dB。用户反馈"一章里就男主小声"就是这个原因（1.4.9）。播放多角色 WAV 时，如果输出是机身喇叭（API 33+ 用 `getAudioDevicesForAttributes`），就按 `该段降幅 − 5.5 dB` 补偿（-4～+8 dB），提升用 `LoudnessEnhancer`，降低用 `setVolume`。耳机、蓝牙不补偿。Edge 的 MP3 不补偿。
+  - 角色表里每个角色可以手动调音量（`CastMember.volume`，-6～+9 dB），播放时叠加在上面的补偿上，不需要重新合成。
 - **测试钩子**（`internal`）：`onPlay`（记录每段实际播放的音频）、`freeVoicesForTest`（对白也用免费的 Edge，测节奏时不花钱）。
 
 ---
@@ -227,7 +233,7 @@ start(book, ch, offset)
 | 通义千问 Qwen3-TTS | 单人；多角色备选 | `…/aigc/multimodal-generation/generation`；带指令时用 `qwen3-tts-instruct-flash`，不带用 `qwen3-tts-flash`，设计音色用 `qwen3-tts-vd-2026-01-26` | 0.8 元/万计费字符（约 1.5 元/万字） | 音色性别不能按名字猜：Elias"墨讲师"其实是女声。方言音色不支持指令 |
 | 千问声音设计 | 多角色定制音色 | `…/audio/tts/customization`，model `qwen-voice-design` | 0.2 元/个 | 描述里写"少年音"的男声有些句子会听着像女声，所以男声固定"中低音"，并用试听片段测音高（男声 > 175 Hz 就重新设计）。设计出的音色**不接受**逐句指令 |
 | Google Gemini TTS | 单人（精品书） | Interactions API（`/v1beta/interactions`），风格放在 `speech_metadata.style`；2.x/3.1 模型走 generateContent | 3.8 Flash TTS 每百万音频 token 9 美元（约 3.8 元/万字），2027 年起翻倍 | **把风格写进正文会被念出来**，必须走 speech_metadata。Tier 1 和 Tier 2 实际都限 100 次/天。国内需要代理 |
-| 豆包语音合成 2.0 | 多角色对白（默认） | `https://openspeech.bytedance.com/api/v3/tts/unidirectional`，请求头 `X-Api-Key` + `X-Api-Resource-Id: seed-tts-2.0`；请求 `format: pcm`，返回逐行 JSON，里面是 base64 PCM，存成 WAV 前用 `Loudness.normalize` 拉到 -20 dBFS（同一句每次合成音量差 3～7 dB、音高差可达 30%，属服务端随机波动）。`context_texts` 里放别的角色台词会让声音向那句台词偏移，所以旁白不带上文、对白只带前面的旁白 | 资源包约 2.8 元/万字 | 音色 ID 规律：`zh_{male\|female}_{拼音}_uranus_bigtts` 和 `ICL_uranus_zh_{male\|female}_{拼音}_tob`。语气指令放在 `additions.context_texts[0]`（不计费），**效果有限**，情绪主要由台词本身决定。`audio_params.emotion` 实测无效。写进正文的 `[#指令]` 会被念出来 |
+| 豆包语音合成 2.0 | 多角色对白（默认） | `https://openspeech.bytedance.com/api/v3/tts/unidirectional`，请求头 `X-Api-Key` + `X-Api-Resource-Id: seed-tts-2.0`；请求 `format: pcm`，返回逐行 JSON，里面是 base64 PCM，存成 WAV 前用 `Loudness.normalize` 拉到 -21 LUFS（同一句每次合成音量差 3～7 dB、音高差可达 30%，属服务端随机波动）。`context_texts` 里放别的角色台词会让声音向那句台词偏移，所以旁白不带上文、对白只带前面的旁白 | 资源包约 2.8 元/万字 | 音色 ID 规律：`zh_{male\|female}_{拼音}_uranus_bigtts` 和 `ICL_uranus_zh_{male\|female}_{拼音}_tob`。语气指令放在 `additions.context_texts[0]`（不计费），**效果有限**，情绪主要由台词本身决定。`audio_params.emotion` 实测无效。写进正文的 `[#指令]` 会被念出来 |
 | 阿里百炼大模型 | 角色分析 | OpenAI 兼容 `/compatible-mode/v1/chat/completions`，`response_format=json_object`，`enable_thinking=false`，`stream=true` | Max 2.5/10、Plus 0.8/2、Flash 0.15/1.5（元/百万 token，输入/输出） | 平台级输入审核会误拦，见 §7.3 |
 | xAI Grok | 角色分析（可选、兜底） | `https://api.x.ai/v1/chat/completions` | 1.25/2.5 美元/百万 token | 国内需要代理；连不上时快速失败并降级 |
 | 系统 TTS | 最后兜底 | Android TextToSpeech | 免费 | 部分 ColorOS 机型没装中文引擎 |

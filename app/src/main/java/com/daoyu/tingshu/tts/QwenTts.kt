@@ -85,6 +85,8 @@ object QwenTts : TtsEngine {
                 out.outputStream().use { o -> r.body!!.byteStream().copyTo(o) }
             }
             if (out.length() < 100) throw TtsException("通义语音没有返回音频", skipEngine = false)
+            // like 豆包, every request (and every designed voice) comes back at its own level
+            Loudness.normalizeWavFile(out)
             val billed = root["usage"]?.jsonObject?.get("characters")?.jsonPrimitive?.longOrNull ?: 0
             return@withContext SynthInfo(billedChars = billed)
         }

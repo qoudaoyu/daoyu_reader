@@ -95,7 +95,7 @@ object DoubaoTts {
             val pcm = os.toByteArray()
             if (pcm.size < 200) throw TtsException("豆包语音没有返回音频", skipEngine = false)
             // each request comes back at its own level (3–6 dB apart); evened out so the voice does not suddenly drop
-            writeWav(Loudness.normalize(pcm), RATE, out)
+            writeWav(Loudness.normalize(pcm, RATE), RATE, out)
             return@withContext SynthInfo(billedChars = text.length.toLong())
         }
         @Suppress("UNREACHABLE_CODE") error("unreachable")
