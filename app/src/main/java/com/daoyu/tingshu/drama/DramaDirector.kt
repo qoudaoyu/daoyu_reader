@@ -434,6 +434,12 @@ ${todo.joinToString("\n") { "${it.name}｜${it.gender}｜${it.age}｜${it.voiceD
         saveCast(bookId, c.copy(members = c.members.map { if (it.name == name) it.copy(doubaoVoice = voice, doubaoUser = true) else it }))
     }
 
+    /** User's loudness correction for one character (dB); applied at playback, nothing is synthesized again. */
+    suspend fun setVolume(bookId: Long, name: String, db: Int) = lock(bookId).withLock {
+        val c = castFlow(bookId).value
+        saveCast(bookId, c.copy(members = c.members.map { if (it.name == name) it.copy(volume = db.coerceIn(-6, 9)) else it }))
+    }
+
     /** User edited how the character should sound. */
     suspend fun setVoiceDesc(bookId: Long, name: String, desc: String) = lock(bookId).withLock {
         val c = castFlow(bookId).value

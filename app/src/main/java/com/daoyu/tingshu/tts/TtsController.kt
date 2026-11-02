@@ -324,11 +324,11 @@ class TtsController(private val context: Context) {
                     return@launch
                 }
                 onPlay?.invoke(seg, file)
-                if (!playFile(file)) {
+                if (!playFile(file, gainDb(seg, file))) {
                     // the file could not be played (and was deleted): make it again once rather than skip the sentence
                     val again = if (seg.drama) synthesizeDrama(seg) else synthesizeWithFallback(seg)
                     if (again != null) onPlay?.invoke(seg, again)
-                    if (again == null || !playFile(again)) {
+                    if (again == null || !playFile(again, gainDb(seg, again))) {
                         _messages.tryEmit(failures.remove(seg) ?: "这一句播放失败，已暂停，点播放重试")
                         pause()
                         while (paused && isActive) delay(300)
@@ -619,15 +619,31 @@ class TtsController(private val context: Context) {
     /** Robolectric's MediaPlayer cannot play real audio; tests that drive the pipeline treat every file as played. */
     internal var skipPlaybackForTest = false
 
+    private val speechAttrs = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
+    private val playbackGain by lazy { PlaybackGain(context, speechAttrs) }
+
+    /**
+     * Volume correction for a multi-role clip (dB): the character's volume from the cast page, plus, through the phone
+     * speaker, a lift for deep voices the speaker cannot carry (a male lead was heard much quieter than everyone else).
+     */
+    internal suspend fun gainDb(seg: Seg, file: File): Double {
+        if (!seg.drama || skipPlaybackForTest) return 0.0
+        val b = book ?: return 0.0
+        val own = seg.role?.let { director.resolve(b.id, it) }?.volume ?: 0
+        val speaker = if (playbackGain.onBuiltInSpeaker()) withContext(Dispatchers.IO) { playbackGain.speakerOffset(file) } else 0.0
+        return (own + speaker).coerceIn(-12.0, 12.0)
+    }
+
     /** Plays [file] to the end. Returns false when it could not be played; the broken file is deleted. */
-    private suspend fun playFile(file: File): Boolean = if (skipPlaybackForTest) true else suspendCancellableCoroutine<Boolean> { cont ->
+    private suspend fun playFile(file: File, gainDb: Double = 0.0): Boolean = if (skipPlaybackForTest) true else suspendCancellableCoroutine<Boolean> { cont ->
         val p = MediaPlayer()
         try {
-            p.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            p.setAudioAttributes(speechAttrs)
             p.setDataSource(file.absolutePath)
             p.setOnCompletionListener { if (cont.isActive) cont.resume(true) }
             p.setOnErrorListener { _, _, _ -> file.delete(); if (cont.isActive) cont.resume(false); true }
             p.prepare()
+            playbackGain.apply(p, gainDb)
             mp = p
             if (!paused) p.start()
         } catch (e: Exception) {
@@ -640,6 +656,7 @@ class TtsController(private val context: Context) {
     private fun releasePlayer() {
         mp?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
         mp = null
+        playbackGain.release()
     }
 
     private suspend fun stopInternal(keepActive: Boolean) {

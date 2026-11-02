@@ -34,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -79,6 +80,7 @@ fun CastScreen(bookId: Long, onBack: () -> Unit) {
     var merging by remember { mutableStateOf<CastMember?>(null) }
     var editing by remember { mutableStateOf<CastMember?>(null) }
     var pickingDb by remember { mutableStateOf<CastMember?>(null) }
+    var adjusting by remember { mutableStateOf<CastMember?>(null) }
     val doubao = settings.dramaVoiceEngine == "doubao" && app.keys.volcKey.isNotBlank()
     var designTick by remember { mutableStateOf(0) }   // recompose while a design runs
     fun redesign(m: CastMember, desc: String) {
@@ -166,8 +168,12 @@ fun CastScreen(bookId: Long, onBack: () -> Unit) {
                             Text(if (m.voiceDesc.isNotEmpty()) "声音：${m.voiceDesc}" else "声音：未描述，点此填写",
                                 fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp,
                                 modifier = Modifier.clickable { editing = m }.padding(top = 2.dp))
-                            Text("是同一人？合并…", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.clickable { merging = m }.padding(top = 4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                Text("是同一人？合并…", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.clickable { merging = m }.padding(top = 4.dp))
+                                Text(if (m.volume == 0) "音量…" else "音量 ${volumeLabel(m.volume)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.clickable { adjusting = m }.padding(top = 4.dp))
+                            }
                         }
                         val v = Engines.qwenVoices.firstOrNull { it.id == m.voice }
                         val busy = designTick >= 0 && app.director.isDesigning(bookId, m.name)
@@ -230,6 +236,25 @@ fun CastScreen(bookId: Long, onBack: () -> Unit) {
             }
         )
     }
+    adjusting?.let { m ->
+        var db by remember(m.name) { mutableStateOf(m.volume.toFloat()) }
+        AlertDialog(
+            onDismissRequest = { adjusting = null },
+            title = { Text("「${m.name}」的音量") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("这个角色听着偏小或偏大时调这里，从下一句起生效，不用重新合成。用手机外放时，低沉的嗓音已经会自动补一些。",
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
+                    Text(volumeLabel(db.toInt()), fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    Slider(db, { db = Math.round(it).toFloat() }, valueRange = -6f..9f, steps = 14)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { adjusting = null; scope.launch { app.director.setVolume(bookId, m.name, db.toInt()) } }) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { adjusting = null }) { Text("取消") } }
+        )
+    }
     merging?.let { m ->
         val others = cast.members.filter { it.mergedInto == null && it.name != m.name }.sortedByDescending { it.lines }
         AlertDialog(
@@ -250,6 +275,12 @@ fun CastScreen(bookId: Long, onBack: () -> Unit) {
             confirmButton = { TextButton(onClick = { merging = null }) { Text("取消") } }
         )
     }
+}
+
+private fun volumeLabel(db: Int) = when {
+    db == 0 -> "标准"
+    db > 0 -> "调大 $db dB"
+    else -> "调小 ${-db} dB"
 }
 
 @Composable
